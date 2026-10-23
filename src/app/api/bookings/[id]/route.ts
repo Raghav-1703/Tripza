@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { recalculateRideRouteAndFares } from "@/lib/dynamicRouting";
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -45,10 +46,19 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
           where: { id: booking.id },
           data: { status: "CONFIRMED" }
         });
+
+        // Trigger dynamic rerouting and fare recalculation for all confirmed passengers
+        try {
+          await recalculateRideRouteAndFares(booking.rideId);
+        } catch (rerouteErr) {
+          console.error("Rerouting failed on confirmation, preserved existing route/fares:", rerouteErr);
+        }
+
         return NextResponse.json(updated);
       }
 
       if (action === "REJECT") {
+        const wasConfirmed = booking.status === "CONFIRMED";
         const updated = await prisma.$transaction(async (tx) => {
           const b = await tx.booking.update({
             where: { id: booking.id },
@@ -60,6 +70,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
           });
           return b;
         });
+
+        if (wasConfirmed) {
+          try {
+            await recalculateRideRouteAndFares(booking.rideId);
+          } catch (rerouteErr) {
+            console.error("Rerouting failed on rejection, preserved existing route/fares:", rerouteErr);
+          }
+        }
+
         return NextResponse.json(updated);
       }
     }
@@ -68,7 +87,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       if (!isPassenger) {
         return NextResponse.json({ message: "Only the passenger can cancel" }, { status: 403 });
       }
-      
+
+      const wasConfirmed = booking.status === "CONFIRMED";
       const updated = await prisma.$transaction(async (tx) => {
         const b = await tx.booking.update({
           where: { id: booking.id },
@@ -80,6 +100,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         });
         return b;
       });
+
+      if (wasConfirmed) {
+        try {
+          await recalculateRideRouteAndFares(booking.rideId);
+        } catch (rerouteErr) {
+          console.error("Rerouting failed on cancellation, preserved existing route/fares:", rerouteErr);
+        }
+      }
+
       return NextResponse.json(updated);
     }
 

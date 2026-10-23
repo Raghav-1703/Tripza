@@ -1,9 +1,11 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
 import L from "leaflet";
+import type { LiveLocationData } from "./RouteMap";
+import { resolveLocationText } from "@/lib/locationSearch";
 
 // Fix Leaflet marker icons in Next.js
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -31,12 +33,24 @@ export interface MapLocation {
   lon?: number;
 }
 
+export interface RouteStopPoint {
+  id: string;
+  type: "PICKUP" | "DROP";
+  bookingId?: string;
+  passengerName?: string;
+  locationName: string;
+  lat: number;
+  lon: number;
+}
+
 export interface RouteMapClientProps {
   origin: string | MapLocation;
   destination: string | MapLocation;
   passengerOrigin?: string | MapLocation;
   passengerDestination?: string | MapLocation;
-  liveLocation?: { lat: number; lon: number } | null;
+  liveLocation?: LiveLocationData | null;
+  routeGeometry?: [number, number][];
+  stops?: RouteStopPoint[];
   onRouteCalculated?: (info: RouteInfo | null) => void;
 }
 
@@ -58,16 +72,238 @@ const redIcon = new L.Icon({
   shadowSize: [41, 41]
 });
 
-const goldIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41]
-});
+// High-visibility, top-down animated moving vehicle pointer with forward directional beacon
+function createVehicleIcon(initialHeading?: number | null) {
+  const rotation = typeof initialHeading === "number" && !isNaN(initialHeading) ? Math.round(initialHeading) : 0;
 
-// Helper component to auto-fit map bounds
+  return L.divIcon({
+    className: "driver-moving-vehicle-icon-wrapper",
+    html: `
+      <div style="position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; pointer-events: auto;">
+        <!-- Pulsing radar wave -->
+        <span style="position: absolute; width: 42px; height: 42px; border-radius: 9999px; background-color: rgba(16, 185, 129, 0.35); animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;"></span>
+        
+        <!-- Rotating vehicle puck (default base orientation: North / 0° pointing UP) -->
+        <div class="vehicle-puck-rotator" style="position: relative; width: 34px; height: 34px; border-radius: 9999px; background: linear-gradient(135deg, #10b981 0%, #047857 100%); border: 2.5px solid #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; transform: rotate(${rotation}deg); transform-origin: 50% 50%; transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);">
+          
+          <!-- Forward direction pointer arrowhead (Pointing UP / North) -->
+          <div style="position: absolute; top: -6px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 7px solid #10b981; filter: drop-shadow(0 -1px 2px rgba(0,0,0,0.35));"></div>
+          
+          <!-- Top-down car body silhouette facing UP (North = 0°) -->
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" style="display: block;">
+            <!-- Car body (front at y=3, rear at y=21) -->
+            <path d="M7 6.5C7 4.5 8.5 3 12 3C15.5 3 17 4.5 17 6.5V17.5C17 19.5 15.5 21 12 21C8.5 21 7 19.5 7 17.5V6.5Z" fill="#ffffff" />
+            <!-- Windshield (dark glass near top / front) -->
+            <path d="M8.2 7.8C8.8 6.6 9.8 6 12 6C14.2 6 15.2 6.6 15.8 7.8C15.5 9 14.8 9.5 12 9.5C9.2 9.5 8.5 9 8.2 7.8Z" fill="#047857" />
+            <!-- Rear window (near bottom / rear) -->
+            <path d="M8.8 16C9.2 15.2 10.2 14.8 12 14.8C13.8 14.8 14.8 15.2 15.2 16C15 16.8 14.2 17.2 12 17.2C9.8 17.2 9 16.8 8.8 16Z" fill="#047857" />
+            <!-- Left side mirror -->
+            <rect x="5.5" y="7.5" width="1.5" height="3" rx="0.75" fill="#ffffff" />
+            <!-- Right side mirror -->
+            <rect x="17" y="7.5" width="1.5" height="3" rx="0.75" fill="#ffffff" />
+            <!-- Headlights (amber/yellow at front) -->
+            <circle cx="9" cy="4" r="0.9" fill="#fef08a" />
+            <circle cx="15" cy="4" r="0.9" fill="#fef08a" />
+            <!-- Taillights (red at rear) -->
+            <rect x="8" y="20.2" width="2" height="0.8" rx="0.4" fill="#ef4444" />
+            <rect x="14" y="20.2" width="2" height="0.8" rx="0.4" fill="#ef4444" />
+          </svg>
+        </div>
+      </div>
+    `,
+    iconSize: [44, 44],
+    iconAnchor: [22, 22],
+    popupAnchor: [0, -22],
+  });
+}
+
+function isValidCoord(lat: unknown, lon: unknown): lat is number {
+  return typeof lat === "number" && typeof lon === "number" && !isNaN(lat) && !isNaN(lon) && isFinite(lat) && isFinite(lon);
+}
+
+// MovingVehicleMarker animates coordinate glide smoothly and updates rotation on the inner element
+function MovingVehicleMarker({ liveLocation }: { liveLocation: LiveLocationData }) {
+  const markerRef = useRef<L.Marker | null>(null);
+  const currentPosRef = useRef<[number, number]>([
+    isValidCoord(liveLocation.lat, liveLocation.lon) ? liveLocation.lat : 0,
+    isValidCoord(liveLocation.lat, liveLocation.lon) ? liveLocation.lon : 0
+  ]);
+  const currentHeadingRef = useRef<number>(
+    typeof liveLocation.heading === "number" && !isNaN(liveLocation.heading) ? liveLocation.heading : 0
+  );
+  const rafIdRef = useRef<number | null>(null);
+  const iconRef = useRef<L.DivIcon | null>(null);
+
+  if (!iconRef.current && isValidCoord(liveLocation.lat, liveLocation.lon)) {
+    iconRef.current = createVehicleIcon(liveLocation.heading);
+  }
+
+  // Shortest angle rotation prevents 360° reverse spinning when crossing 0°/360°
+  const getContinuousAngle = (from: number, to: number) => {
+    let diff = (to - from) % 360;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    return from + diff;
+  };
+
+  useEffect(() => {
+    const marker = markerRef.current;
+    if (!marker || !isValidCoord(liveLocation.lat, liveLocation.lon)) return;
+
+    // Smooth heading rotation applied to the inner rotating element
+    if (typeof liveLocation.heading === "number" && !isNaN(liveLocation.heading)) {
+      const nextAngle = getContinuousAngle(currentHeadingRef.current, liveLocation.heading);
+      currentHeadingRef.current = nextAngle;
+      const el = marker.getElement()?.querySelector(".vehicle-puck-rotator") as HTMLElement | null;
+      if (el) {
+        el.style.transform = `rotate(${Math.round(nextAngle)}deg)`;
+      }
+    }
+
+    // Smooth coordinate interpolation directly using marker.setLatLng()
+    const targetLat = liveLocation.lat;
+    const targetLon = liveLocation.lon;
+    const [startLat, startLon] = currentPosRef.current;
+
+    const dLat = targetLat - startLat;
+    const dLon = targetLon - startLon;
+
+    // If movement is negligible, snap directly
+    if (Math.abs(dLat) < 0.000005 && Math.abs(dLon) < 0.000005) {
+      currentPosRef.current = [targetLat, targetLon];
+      marker.setLatLng([targetLat, targetLon]);
+      return;
+    }
+
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+
+    const duration = 900; // ms glide window
+    const startTime = performance.now();
+
+    const step = (time: number) => {
+      const elapsed = time - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      // Ease-out cubic for realistic vehicle deceleration into position
+      const ease = 1 - Math.pow(1 - progress, 3);
+
+      const nextLat = startLat + dLat * ease;
+      const nextLon = startLon + dLon * ease;
+      currentPosRef.current = [nextLat, nextLon];
+      marker.setLatLng([nextLat, nextLon]);
+
+      if (progress < 1) {
+        rafIdRef.current = requestAnimationFrame(step);
+      } else {
+        rafIdRef.current = null;
+      }
+    };
+
+    rafIdRef.current = requestAnimationFrame(step);
+
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
+  }, [liveLocation.lat, liveLocation.lon, liveLocation.heading]);
+
+  if (!isValidCoord(liveLocation.lat, liveLocation.lon)) {
+    return null;
+  }
+
+  return (
+    <Marker
+      ref={markerRef}
+      position={[liveLocation.lat, liveLocation.lon]}
+      icon={iconRef.current || undefined}
+      zIndexOffset={1000}
+    >
+      <Popup>
+        <div className="text-xs p-1 space-y-1">
+          <p className="font-bold flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+            <span>🚗</span>
+            <span>Driver Vehicle (Live)</span>
+          </p>
+          {liveLocation.updatedAt ? (
+            <p className="text-[11px] text-muted-foreground">
+              Last update: {liveLocation.updatedAt}
+            </p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">Live GPS active</p>
+          )}
+          {liveLocation.heading != null && !isNaN(liveLocation.heading) && (
+            <p className="text-[10px] text-muted-foreground">
+              Heading: {Math.round(liveLocation.heading)}°
+            </p>
+          )}
+        </div>
+      </Popup>
+    </Marker>
+  );
+}
+
+// User-friendly map follower that avoids fighting manual panning
+function DriverFollower({ liveLocation }: { liveLocation?: LiveLocationData | null }) {
+  const map = useMap();
+  const [isFollowing, setIsFollowing] = useState(false);
+  const hasFocusedOnceRef = useRef(false);
+
+  // Soft one-time focus when first coordinates arrive
+  useEffect(() => {
+    if (!hasFocusedOnceRef.current && liveLocation && !isNaN(liveLocation.lat) && !isNaN(liveLocation.lon)) {
+      hasFocusedOnceRef.current = true;
+      map.panTo([liveLocation.lat, liveLocation.lon], { animate: true, duration: 0.8 });
+    }
+  }, [liveLocation, map]);
+
+  // When follow mode is active, smoothly pan with vehicle movement
+  useEffect(() => {
+    if (isFollowing && liveLocation && !isNaN(liveLocation.lat) && !isNaN(liveLocation.lon)) {
+      map.panTo([liveLocation.lat, liveLocation.lon], { animate: true, duration: 0.6 });
+    }
+  }, [liveLocation, isFollowing, map]);
+
+  // If the user drags the map manually, disable follow mode immediately
+  useEffect(() => {
+    const handleDrag = () => setIsFollowing(false);
+    map.on("dragstart", handleDrag);
+    return () => {
+      map.off("dragstart", handleDrag);
+    };
+  }, [map]);
+
+  if (!liveLocation || isNaN(liveLocation.lat) || isNaN(liveLocation.lon)) {
+    return null;
+  }
+
+  return (
+    <div className="leaflet-top leaflet-right !top-3 !right-3 z-[400] pointer-events-auto">
+      <button
+        type="button"
+        onClick={() => {
+          const nextState = !isFollowing;
+          setIsFollowing(nextState);
+          map.panTo([liveLocation.lat, liveLocation.lon], { animate: true, duration: 0.8 });
+        }}
+        title={isFollowing ? "Following driver (Click to unlock map)" : "Center on driver vehicle"}
+        className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold shadow-md flex items-center gap-1.5 border backdrop-blur-md transition-all cursor-pointer ${
+          isFollowing
+            ? "bg-emerald-600 text-white border-emerald-700 shadow-emerald-500/20"
+            : "bg-background/95 text-foreground hover:bg-background border-border hover:border-foreground/30"
+        }`}
+      >
+        <span className={`w-2 h-2 rounded-full ${isFollowing ? "bg-white animate-pulse" : "bg-emerald-500"}`}></span>
+        <span>{isFollowing ? "Following Driver" : "Center Driver"}</span>
+      </button>
+    </div>
+  );
+}
+
+// Helper component to auto-fit map bounds initially
 function FitBounds({ start, end, routePositions }: { start: Location; end: Location; routePositions: [number, number][] }) {
   const map = useMap();
   useEffect(() => {
@@ -107,32 +343,59 @@ export default function RouteMapClient({
   passengerOrigin,
   passengerDestination,
   liveLocation,
+  routeGeometry,
+  stops,
   onRouteCalculated 
 }: RouteMapClientProps) {
   const [startLoc, setStartLoc] = useState<Location | null>(null);
   const [endLoc, setEndLoc] = useState<Location | null>(null);
   const [passStartLoc, setPassStartLoc] = useState<Location | null>(null);
   const [passEndLoc, setPassEndLoc] = useState<Location | null>(null);
-  const [routePositions, setRoutePositions] = useState<[number, number][]>([]);
+  const [routePositions, setRoutePositions] = useState<[number, number][]>(routeGeometry || []);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
+
+  // Synchronize route positions immediately whenever routeGeometry changes
+  useEffect(() => {
+    if (routeGeometry && routeGeometry.length > 0) {
+      setRoutePositions(routeGeometry);
+    }
+  }, [routeGeometry]);
 
   useEffect(() => {
     let isMounted = true;
     
-    const resolveLocation = async (locInput: string | MapLocation): Promise<Location | null> => {
-      if (typeof locInput === "object" && locInput.lat !== undefined && locInput.lon !== undefined) {
-        return { name: locInput.name, lat: locInput.lat, lon: locInput.lon };
+    const resolveLocation = async (locInput: string | MapLocation | undefined | null): Promise<Location | null> => {
+      if (!locInput) return null;
+
+      if (typeof locInput === "object") {
+        const lat = typeof locInput.lat === "number" ? locInput.lat : (locInput.lat != null ? parseFloat(String(locInput.lat)) : NaN);
+        const lon = typeof locInput.lon === "number" ? locInput.lon : (locInput.lon != null ? parseFloat(String(locInput.lon)) : NaN);
+        if (isValidCoord(lat, lon)) {
+          return { name: locInput.name || "Location", lat, lon };
+        }
       }
       
-      const query = typeof locInput === "string" ? locInput : locInput.name;
-      if (!query || query.length < 3) return null;
+      const query = typeof locInput === "string" ? locInput : locInput?.name;
+      if (!query || typeof query !== "string" || query.trim().length < 3) return null;
+
+      try {
+        const local = await resolveLocationText(query);
+        if (local && isValidCoord(local.lat, local.lon)) {
+          return { name: local.name, lat: local.lat, lon: local.lon };
+        }
+      } catch {}
       
       try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1&email=contact@tpool.com`);
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query.trim())}&limit=1&email=contact@tpool.com`);
+        if (!res.ok) return null;
         const data = await res.json();
-        if (data && data.length > 0) {
-          return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), name: query };
+        if (Array.isArray(data) && data.length > 0) {
+          const lat = parseFloat(data[0].lat);
+          const lon = parseFloat(data[0].lon);
+          if (isValidCoord(lat, lon)) {
+            return { lat, lon, name: query };
+          }
         }
         return null;
       } catch { return null; }
@@ -239,12 +502,16 @@ export default function RouteMapClient({
         ]);
         if (!isMounted) return;
         
-        if (s && e) {
+          if (s && e) {
           setStartLoc(s);
           setEndLoc(e);
           if (ps) setPassStartLoc(ps);
           if (pe) setPassEndLoc(pe);
-          await fetchRoute(s, e);
+          if (routeGeometry && routeGeometry.length > 0) {
+            setRoutePositions(routeGeometry);
+          } else {
+            await fetchRoute(s, e);
+          }
         } else {
           setError(true);
           if (onRouteCalculated) onRouteCalculated(null);
@@ -266,7 +533,7 @@ export default function RouteMapClient({
       clearTimeout(timeoutId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [origin, destination, passengerOrigin, passengerDestination]);
+  }, [origin, destination, passengerOrigin, passengerDestination, routeGeometry]);
 
   if (isLoading) {
     return <div className="h-full min-h-[256px] w-full bg-muted flex items-center justify-center text-sm text-muted-foreground rounded-lg border">Loading map & route data...</div>;
@@ -275,7 +542,13 @@ export default function RouteMapClient({
   const originName = typeof origin === "string" ? origin : origin?.name;
   const destName = typeof destination === "string" ? destination : destination?.name;
 
-  if (error || !startLoc || !endLoc) {
+  if (
+    error || 
+    !startLoc || 
+    !endLoc || 
+    !isValidCoord(startLoc.lat, startLoc.lon) || 
+    !isValidCoord(endLoc.lat, endLoc.lon)
+  ) {
     return <div className="h-full min-h-[256px] w-full bg-muted flex flex-col items-center justify-center text-sm text-muted-foreground rounded-lg border">
       <p>Map view unavailable for this route.</p>
       {originName && destName && (
@@ -301,31 +574,59 @@ export default function RouteMapClient({
           <Polyline positions={routePositions} pathOptions={{ color: '#3b82f6', weight: 4, opacity: 0.8 }} />
         )}
 
-        <Marker position={[startLoc.lat, startLoc.lon]}>
-          <Popup>Driver Start: {startLoc.name}</Popup>
-        </Marker>
-        
-        <Marker position={[endLoc.lat, endLoc.lon]}>
-          <Popup>Driver End: {endLoc.name}</Popup>
-        </Marker>
-        
-        {passStartLoc && (
-          <Marker position={[passStartLoc.lat, passStartLoc.lon]} icon={greenIcon}>
-            <Popup>Your Pickup: {passStartLoc.name}</Popup>
+        {isValidCoord(startLoc.lat, startLoc.lon) && (
+          <Marker position={[startLoc.lat, startLoc.lon]}>
+            <Popup>Driver Start: {startLoc.name}</Popup>
           </Marker>
         )}
         
-        {passEndLoc && (
-          <Marker position={[passEndLoc.lat, passEndLoc.lon]} icon={redIcon}>
-            <Popup>Your Destination: {passEndLoc.name}</Popup>
+        {isValidCoord(endLoc.lat, endLoc.lon) && (
+          <Marker position={[endLoc.lat, endLoc.lon]}>
+            <Popup>Driver End: {endLoc.name}</Popup>
           </Marker>
+        )}
+        
+        {stops && stops.length > 0 ? (
+          stops
+            .filter((stop) => isValidCoord(stop.lat, stop.lon))
+            .map((stop) => (
+              <Marker
+                key={stop.id}
+                position={[stop.lat, stop.lon]}
+                icon={stop.type === "PICKUP" ? greenIcon : redIcon}
+              >
+                <Popup>
+                  <div className="text-xs space-y-0.5">
+                    <p className="font-semibold text-foreground">
+                      {stop.type === "PICKUP" ? "🟢 Passenger Pickup" : "🔴 Passenger Drop-off"}
+                      {stop.passengerName ? `: ${stop.passengerName}` : ""}
+                    </p>
+                    <p className="text-muted-foreground">{stop.locationName}</p>
+                  </div>
+                </Popup>
+              </Marker>
+            ))
+        ) : (
+          <>
+            {passStartLoc && isValidCoord(passStartLoc.lat, passStartLoc.lon) && (
+              <Marker position={[passStartLoc.lat, passStartLoc.lon]} icon={greenIcon}>
+                <Popup>Your Pickup: {passStartLoc.name}</Popup>
+              </Marker>
+            )}
+            
+            {passEndLoc && isValidCoord(passEndLoc.lat, passEndLoc.lon) && (
+              <Marker position={[passEndLoc.lat, passEndLoc.lon]} icon={redIcon}>
+                <Popup>Your Destination: {passEndLoc.name}</Popup>
+              </Marker>
+            )}
+          </>
         )}
 
-        {liveLocation && !isNaN(liveLocation.lat) && !isNaN(liveLocation.lon) && (
-          <Marker position={[liveLocation.lat, liveLocation.lon]} icon={goldIcon}>
-            <Popup>📍 Live Shared Position</Popup>
-          </Marker>
+        {liveLocation && isValidCoord(liveLocation.lat, liveLocation.lon) && (
+          <MovingVehicleMarker liveLocation={liveLocation} />
         )}
+
+        <DriverFollower liveLocation={liveLocation} />
 
         <FitBounds start={startLoc} end={endLoc} routePositions={routePositions} />
       </MapContainer>

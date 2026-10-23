@@ -1,10 +1,22 @@
+import { resolveLocationText } from "./locationSearch";
+
 export async function geocode(query: string) {
   if (!query || query.trim().length < 2) return null;
   const trimmed = query.trim();
 
+  // 1. Check verified local landmarks and hybrid search resolver first
   try {
-    // Try Photon API first (same engine and location bias used by LocationInput component)
-    const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(trimmed)}&lat=18.72&lon=73.68&limit=1`);
+    const resolved = await resolveLocationText(trimmed);
+    if (resolved && typeof resolved.lat === "number" && typeof resolved.lon === "number") {
+      return { lat: resolved.lat, lon: resolved.lon };
+    }
+  } catch (e) {
+    console.error("resolveLocationText failed:", e);
+  }
+
+  // 2. Try Photon API with Talegaon coordinate bias
+  try {
+    const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(trimmed)}&lat=18.735&lon=73.675&limit=1`);
     const data = await res.json();
     if (data && data.features && data.features.length > 0) {
       const coords = data.features[0].geometry.coordinates; // Photon coordinates format: [lon, lat]
@@ -14,6 +26,7 @@ export async function geocode(query: string) {
     console.error("Photon geocode failed:", e);
   }
 
+  // 3. Fall back to Nominatim
   try {
     const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(trimmed)}&limit=1`, {
       headers: { "User-Agent": "TpoolApp/1.0" }

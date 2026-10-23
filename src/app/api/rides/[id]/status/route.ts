@@ -12,14 +12,101 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     const ride = await prisma.ride.findUnique({
       where: { id: params.id },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        status: true,
+        distance: true,
+        price: true,
+        routeGeometry: true,
+        routeUpdatedAt: true,
+        bookings: {
+          where: { status: "CONFIRMED" },
+          select: {
+            id: true,
+            userId: true,
+            fare: true,
+            pickupLocation: true,
+            pickupLat: true,
+            pickupLon: true,
+            dropLocation: true,
+            dropLat: true,
+            dropLon: true,
+            mainFare: true,
+            detourFare: true,
+            detourDistance: true,
+            fareBreakdown: true,
+            user: { select: { name: true } },
+          },
+        },
+      },
     });
 
     if (!ride) {
       return NextResponse.json({ message: "Ride not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ status: ride.status }, { status: 200 });
+    const userBooking = ride.bookings.find((b) => b.userId === session.user.id);
+    const confirmedStops = ride.bookings.flatMap((b) => {
+      const s = [];
+      if (
+        typeof b.pickupLat === "number" &&
+        typeof b.pickupLon === "number" &&
+        !isNaN(b.pickupLat) &&
+        !isNaN(b.pickupLon)
+      ) {
+        s.push({
+          id: `${b.id}-pickup`,
+          type: "PICKUP" as const,
+          bookingId: b.id,
+          passengerName: b.user.name,
+          locationName: b.pickupLocation || "Pickup",
+          lat: b.pickupLat,
+          lon: b.pickupLon,
+        });
+      }
+      if (
+        typeof b.dropLat === "number" &&
+        typeof b.dropLon === "number" &&
+        !isNaN(b.dropLat) &&
+        !isNaN(b.dropLon)
+      ) {
+        s.push({
+          id: `${b.id}-drop`,
+          type: "DROP" as const,
+          bookingId: b.id,
+          passengerName: b.user.name,
+          locationName: b.dropLocation || "Drop-off",
+          lat: b.dropLat,
+          lon: b.dropLon,
+        });
+      }
+      return s;
+    });
+
+    let parsedBreakdown = null;
+    if (userBooking?.fareBreakdown) {
+      try {
+        parsedBreakdown = JSON.parse(userBooking.fareBreakdown);
+      } catch {}
+    }
+
+    return NextResponse.json(
+      {
+        status: ride.status,
+        routeVersion: ride.routeUpdatedAt ? new Date(ride.routeUpdatedAt).getTime() : 0,
+        distance: ride.distance,
+        price: ride.price,
+        userFare: userBooking?.fare ?? null,
+        userMainFare: userBooking?.mainFare ?? null,
+        userDetourFare: userBooking?.detourFare ?? null,
+        userDetourDistance: userBooking?.detourDistance ?? null,
+        userFareBreakdown: parsedBreakdown,
+        confirmedCount: ride.bookings.length,
+        routeGeometry: ride.routeGeometry,
+        stops: confirmedStops,
+      },
+      { status: 200 }
+    );
   } catch (error) {
     console.error("Failed to fetch ride status:", error);
     return NextResponse.json({ message: "Internal server error" }, { status: 500 });

@@ -145,11 +145,18 @@ export default async function Dashboard() {
                   <PassengerWindowSync rideId={booking.ride.id} currentStatus={booking.ride.status} />
                   <CardHeader className="pb-3">
                     <div className="flex justify-between items-start gap-2">
-                      <CardTitle className="text-base hover:text-primary transition-colors">
-                        <Link href={`/rides/${booking.ride.id}`}>
-                          {booking.ride.origin} → {booking.ride.destination}
-                        </Link>
-                      </CardTitle>
+                      <div>
+                        <CardTitle className="text-base hover:text-primary transition-colors">
+                          <Link href={`/rides/${booking.ride.id}`}>
+                            {booking.pickupLocation || booking.ride.origin} → {booking.dropLocation || booking.ride.destination}
+                          </Link>
+                        </CardTitle>
+                        {(booking.pickupLocation && booking.pickupLocation !== booking.ride.origin) || (booking.dropLocation && booking.dropLocation !== booking.ride.destination) ? (
+                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                            Driver route: {booking.ride.origin} → {booking.ride.destination}
+                          </p>
+                        ) : null}
+                      </div>
                       <Badge variant={booking.status === "CONFIRMED" ? "default" : booking.status === "PENDING" ? "outline" : "secondary"}>
                         {booking.status}
                       </Badge>
@@ -174,9 +181,16 @@ export default async function Dashboard() {
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-muted-foreground">Fare:</span>
-                        <span className="font-semibold text-primary">
-                          {booking.fare > 0 ? `₹${booking.fare.toFixed(2)}` : "₹0.00"}
-                        </span>
+                        <div className="text-right">
+                          <span className="font-semibold text-primary">
+                            {booking.fare > 0 ? `₹${booking.fare.toFixed(2)}` : "₹0.00"}
+                          </span>
+                          {booking.detourFare && booking.detourFare > 0 ? (
+                            <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                              Incl. ₹{booking.detourFare.toFixed(2)} detour ({((booking.detourDistance || 0) / 1000).toFixed(2)} km)
+                            </p>
+                          ) : null}
+                        </div>
                       </div>
                       <div className="flex items-center justify-between pt-1 border-t">
                         <span className="text-xs font-medium text-muted-foreground">Seat Sharing Preference:</span>
@@ -214,7 +228,7 @@ export default async function Dashboard() {
                     <div className="flex justify-between items-center gap-2">
                       <CardTitle className="text-sm">
                         <Link href={`/rides/${booking.ride.id}`} className="hover:underline">
-                          {booking.ride.origin} → {booking.ride.destination}
+                          {booking.pickupLocation || booking.ride.origin} → {booking.dropLocation || booking.ride.destination}
                         </Link>
                       </CardTitle>
                       <Badge variant="secondary" className="text-[10px]">

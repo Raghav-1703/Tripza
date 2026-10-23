@@ -7,7 +7,33 @@ interface SosButtonProps {
   rideId: string;
 }
 
+const fetchIpLocation = async (): Promise<{ latitude: number | null; longitude: number | null }> => {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch("https://ipapi.co/json/", { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      if (typeof data.latitude === "number" && typeof data.longitude === "number") {
+        console.log(`[SosButton IP Fallback] latitude = ${data.latitude}, longitude = ${data.longitude}`);
+        return { latitude: data.latitude, longitude: data.longitude };
+      }
+    }
+  } catch (e) {
+    console.warn("IP location fallback failed:", e);
+  }
+  return { latitude: null, longitude: null };
+};
+
 const getLocationCoordinates = async (): Promise<{ latitude: number | null; longitude: number | null }> => {
+  // 1. Try IP location first to provide instant location and avoid triggering macOS CoreLocation console errors on desktop Macs
+  const ipLoc = await fetchIpLocation();
+  if (ipLoc.latitude !== null && ipLoc.longitude !== null) {
+    return ipLoc;
+  }
+
+  // 2. Fallback to browser geolocation if IP location service is unreachable
   if (typeof window === "undefined" || !("geolocation" in navigator)) {
     return { latitude: null, longitude: null };
   }
@@ -18,10 +44,9 @@ const getLocationCoordinates = async (): Promise<{ latitude: number | null; long
     const timer = setTimeout(() => {
       if (!isSettled) {
         isSettled = true;
-        console.warn("Could not obtain current location for SOS. Continuing without location.");
         resolve({ latitude: null, longitude: null });
       }
-    }, 15000);
+    }, 8000);
 
     try {
       navigator.geolocation.getCurrentPosition(
@@ -42,21 +67,20 @@ const getLocationCoordinates = async (): Promise<{ latitude: number | null; long
           if (!isSettled) {
             isSettled = true;
             clearTimeout(timer);
-            console.warn("Could not obtain current location for SOS:", err.message);
+            console.warn("Browser geolocation failed:", err.message);
             resolve({ latitude: null, longitude: null });
           }
         },
         {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
+          enableHighAccuracy: false,
+          timeout: 7000,
+          maximumAge: 60000,
         }
       );
     } catch {
       if (!isSettled) {
         isSettled = true;
         clearTimeout(timer);
-        console.warn("Could not obtain current location for SOS. Continuing without location.");
         resolve({ latitude: null, longitude: null });
       }
     }
@@ -93,6 +117,8 @@ export default function SosButton({ rideId }: SosButtonProps) {
         let text = "🚨 Emergency SOS Activated! Your emergency contact has been notified.";
         if (data.locationUnavailable || locationUnavailable) {
           text += " (Current location could not be obtained)";
+        } else {
+          text += ` (Location attached: ${latitude?.toFixed(4)}, ${longitude?.toFixed(4)})`;
         }
         setStatusMessage({
           type: "success",

@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { calculateFare } from "@/lib/fareCalculator";
 import { geocode } from "@/lib/geo";
+import { fetchDirectRoute } from "@/lib/dynamicRouting";
 
 export async function POST(req: Request) {
   try {
@@ -84,6 +85,28 @@ export async function POST(req: Request) {
       }
     }
 
+    let baseRouteGeometry: string | null = null;
+    let baseDistance: number | null = parsedDistance;
+
+    if (
+      finalOriginLat !== null &&
+      finalOriginLon !== null &&
+      finalDestLat !== null &&
+      finalDestLon !== null
+    ) {
+      try {
+        const directPolyline = await fetchDirectRoute(
+          { lat: finalOriginLat, lon: finalOriginLon },
+          { lat: finalDestLat, lon: finalDestLon }
+        );
+        if (directPolyline && directPolyline.length > 0) {
+          baseRouteGeometry = JSON.stringify(directPolyline);
+        }
+      } catch (err) {
+        console.warn("Could not pre-fetch direct route geometry:", err);
+      }
+    }
+
     const ride = await prisma.ride.create({
       data: {
         driverId: session.user.id,
@@ -99,6 +122,9 @@ export async function POST(req: Request) {
         vehicleName: vehicleName || "",
         distance: distance ? parseFloat(distance) : null,
         duration: duration ? parseInt(duration) : null,
+        baseRouteGeometry,
+        baseDistance,
+        routeGeometry: baseRouteGeometry,
       },
     });
 

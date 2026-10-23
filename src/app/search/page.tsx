@@ -5,6 +5,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { geocode, decodePolyline6, pointToRouteDistance, getRouteSegmentDistance } from "@/lib/geo";
 import { calculateFare } from "@/lib/fareCalculator";
+import { fetchRoadDistance, calculateRoadDetourDistance } from "@/lib/dynamicRouting";
 import BackButton from "@/components/BackButton";
 
 // Allow Next.js to dynamically render this page on every request
@@ -74,34 +75,54 @@ export default async function SearchResults({
     if (driverStart && driverEnd) {
       let points: [number, number][] = [[driverStart.lat, driverStart.lon], [driverEnd.lat, driverEnd.lon]];
 
-      // 4. Fetch original route geometry from Valhalla (with straight line fallback)
-      try {
-        const payloadFastest = {
-          locations: [{ lat: driverStart.lat, lon: driverStart.lon }, { lat: driverEnd.lat, lon: driverEnd.lon }],
-          costing: "auto",
-          costing_options: { auto: { shortest: false } }
-        };
-        const res = await fetch("https://valhalla1.openstreetmap.de/route", { 
-          method: "POST", 
-          headers: { "Content-Type": "application/json" }, 
-          body: JSON.stringify(payloadFastest) 
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.trip && data.trip.legs && data.trip.legs.length > 0) {
-            const shape = data.trip.legs[0].shape;
-            points = decodePolyline6(shape);
+      // Prefer baseline A -> B route geometry from database if present
+      if (ride.baseRouteGeometry) {
+        try {
+          const parsed = JSON.parse(ride.baseRouteGeometry);
+          if (Array.isArray(parsed) && parsed.length > 1) {
+            points = parsed;
           }
+        } catch {}
+      } else if (ride.routeGeometry) {
+        try {
+          const parsed = JSON.parse(ride.routeGeometry);
+          if (Array.isArray(parsed) && parsed.length > 2) {
+            points = parsed;
+          }
+        } catch {}
+      }
+
+      // If points still empty or 2 points, fetch original route geometry from Valhalla
+      if (points.length <= 2) {
+        try {
+          const payloadFastest = {
+            locations: [{ lat: driverStart.lat, lon: driverStart.lon }, { lat: driverEnd.lat, lon: driverEnd.lon }],
+            costing: "auto",
+            costing_options: { auto: { shortest: false } }
+          };
+          const res = await fetch("https://valhalla1.openstreetmap.de/route", { 
+            method: "POST", 
+            headers: { "Content-Type": "application/json" }, 
+            body: JSON.stringify(payloadFastest) 
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.trip && data.trip.legs && data.trip.legs.length > 0) {
+              const shape = data.trip.legs[0].shape;
+              points = decodePolyline6(shape);
+            }
+          }
+        } catch (e) {
+          console.error("Valhalla routing error, falling back to straight-line:", e);
         }
-      } catch (e) {
-        console.error("Valhalla routing error, falling back to straight-line:", e);
       }
 
       let matched = false;
       let pickupInfo: ReturnType<typeof pointToRouteDistance> | null = null;
       let dropInfo: ReturnType<typeof pointToRouteDistance> | null = null;
 
-      const maxDist = ride.rideType === "Private Car Pool" ? 0.5 : 1.0;
+      // Allowable limit: 2.0 km (testing buffer)
+      const maxDist = 2.0;
 
       // 5. Calculate proximity to route
       if (passStart && passEnd) {
@@ -111,7 +132,7 @@ export default async function SearchResults({
         const isDirectionValid = pickupInfo.minIndex < dropInfo.minIndex || 
           (pickupInfo.minIndex === dropInfo.minIndex && pickupInfo.minProj.t <= dropInfo.minProj.t);
 
-        // 6. Check tolerance (1.0km for cab pool, 0.5km for private car pool) and valid direction
+        // 6. Check tolerance and valid direction
         if (pickupInfo.minDist <= maxDist && dropInfo.minDist <= maxDist && isDirectionValid) {
           matched = true;
         }
@@ -129,28 +150,57 @@ export default async function SearchResults({
           (pickupInfo.minIndex < dropInfo.minIndex || 
           (pickupInfo.minIndex === dropInfo.minIndex && pickupInfo.minProj.t <= dropInfo.minProj.t));
 
-        if (isDirectionValid && pickupInfo && dropInfo) {
-           const distKm = getRouteSegmentDistance(
+        let pickupDetourMeters = 0;
+        let dropDetourMeters = 0;
+
+        if (passStart) {
+          const pDetour = await calculateRoadDetourDistance(passStart, points);
+          pickupDetourMeters = pDetour.detourMeters;
+        }
+
+        if (passEnd) {
+          const dDetour = await calculateRoadDetourDistance(passEnd, points);
+          dropDetourMeters = dDetour.detourMeters;
+        }
+
+        if (isDirectionValid && pickupInfo && dropInfo && passStart && passEnd) {
+          if (pickupDetourMeters === 0 && dropDetourMeters === 0) {
+            const actualRoadDist = await fetchRoadDistance(passStart, passEnd);
+            if (typeof actualRoadDist === "number" && actualRoadDist > 0) {
+              segmentDistanceMeters = actualRoadDist;
+            } else {
+              const distKm = getRouteSegmentDistance(
+                points, 
+                pickupInfo.minIndex, 
+                pickupInfo.minProj, 
+                dropInfo.minIndex, 
+                dropInfo.minProj
+              );
+              segmentDistanceMeters = distKm * 1000;
+            }
+          } else {
+            const distKm = getRouteSegmentDistance(
               points, 
               pickupInfo.minIndex, 
               pickupInfo.minProj, 
               dropInfo.minIndex, 
               dropInfo.minProj
-           );
-           segmentDistanceMeters = distKm * 1000;
+            );
+            segmentDistanceMeters = distKm * 1000;
+          }
         }
 
         const fare = calculateFare({
-           rideType: ride.rideType,
-           routeDistanceMeters: segmentDistanceMeters,
-           pickupDetourMeters: (passStart && pickupInfo) ? pickupInfo.minDist * 1000 : 0,
-           dropDetourMeters: (passEnd && dropInfo) ? dropInfo.minDist * 1000 : 0,
+          rideType: ride.rideType,
+          routeDistanceMeters: segmentDistanceMeters,
+          pickupDetourMeters,
+          dropDetourMeters,
         });
 
         matchedRides.push({
-           ...ride,
-           dynamicPrice: fare.passengerTotal,
-           hasFemaleCoPassengerPref
+          ...ride,
+          dynamicPrice: fare.passengerTotal,
+          hasFemaleCoPassengerPref
         });
       }
     }

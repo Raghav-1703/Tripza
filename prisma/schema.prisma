@@ -115,6 +115,10 @@ model Ride {
   currentLon      Float?
   isLiveSharing   Boolean          @default(false)
   locationUpdatedAt DateTime?
+  routeGeometry   String?
+  routeUpdatedAt  DateTime?
+  baseRouteGeometry String?
+  baseDistance    Float?
   createdAt       DateTime         @default(now())
   driver          User             @relation("DriverRides", fields: [driverId], references: [id])
   bookings        Booking[]
@@ -130,9 +134,20 @@ model Booking {
   userId                  String
   seats                   Int                       @default(1)
   fare                    Float                     @default(0)
+  mainFare                Float?                    @default(0)
+  detourFare              Float?                    @default(0)
+  detourDistance          Float?                    @default(0)
+  fareBreakdown           String?
   status                  String                    @default("PENDING") // PENDING, CONFIRMED, CANCELLED, REJECTED
   preferredPassengerGender PassengerGenderPreference @default(ANY)
+  pickupLocation          String?
+  pickupLat               Float?
+  pickupLon               Float?
+  dropLocation            String?
+  dropLat                 Float?
+  dropLon                 Float?
   createdAt               DateTime                  @default(now())
+  updatedAt               DateTime?                 @updatedAt
   ride                    Ride                      @relation(fields: [rideId], references: [id], onDelete: Cascade)
   user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   emergencyAlerts         EmergencyAlert[]

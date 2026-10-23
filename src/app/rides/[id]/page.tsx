@@ -74,16 +74,70 @@ export default async function RideDetails({
   const isPassenger = user?.id ? ride.bookings.some(b => b.userId === user?.id && (b.status === "PENDING" || b.status === "CONFIRMED")) : false;
   const canSeeChat = isDriver || isPassenger;
 
+  const myBooking = user?.id
+    ? ride.bookings.find(
+        (b) => b.userId === user.id && (b.status === "PENDING" || b.status === "CONFIRMED")
+      )
+    : null;
+
   const computedFareFallback = ride.distance 
     ? calculateFare({ rideType: ride.rideType || "Personal Cab", routeDistanceMeters: ride.distance }).passengerTotal 
     : 0;
 
-  const displayFare = searchParams?.fare && parseFloat(searchParams.fare) > 0
-    ? parseFloat(searchParams.fare)
-    : (ride.price > 0 ? ride.price : computedFareFallback);
+  const displayFare = myBooking?.fare && myBooking.fare > 0
+    ? myBooking.fare
+    : (searchParams?.fare && parseFloat(searchParams.fare) > 0
+        ? parseFloat(searchParams.fare)
+        : (ride.price > 0 ? ride.price : computedFareFallback));
 
-  const displayOrigin = searchParams?.origin || ride.origin;
-  const displayDestination = searchParams?.destination || ride.destination;
+  const displayOrigin = myBooking?.pickupLocation || searchParams?.origin || ride.origin;
+  const displayDestination = myBooking?.dropLocation || searchParams?.destination || ride.destination;
+
+  let parsedRouteGeometry: [number, number][] | undefined = undefined;
+  if (ride.routeGeometry) {
+    try {
+      parsedRouteGeometry = JSON.parse(ride.routeGeometry);
+    } catch {}
+  }
+
+  const confirmedStops = ride.bookings
+    .filter((b) => b.status === "CONFIRMED")
+    .flatMap((b) => {
+      const s = [];
+      if (
+        typeof b.pickupLat === "number" &&
+        typeof b.pickupLon === "number" &&
+        !isNaN(b.pickupLat) &&
+        !isNaN(b.pickupLon)
+      ) {
+        s.push({
+          id: `${b.id}-pickup`,
+          type: "PICKUP" as const,
+          bookingId: b.id,
+          passengerName: b.user.name,
+          locationName: b.pickupLocation || "Pickup",
+          lat: b.pickupLat,
+          lon: b.pickupLon,
+        });
+      }
+      if (
+        typeof b.dropLat === "number" &&
+        typeof b.dropLon === "number" &&
+        !isNaN(b.dropLat) &&
+        !isNaN(b.dropLon)
+      ) {
+        s.push({
+          id: `${b.id}-drop`,
+          type: "DROP" as const,
+          bookingId: b.id,
+          passengerName: b.user.name,
+          locationName: b.dropLocation || "Drop-off",
+          lat: b.dropLat,
+          lon: b.dropLon,
+        });
+      }
+      return s;
+    });
 
   const passengerRatingForDriver = isPassenger && ride.status === "COMPLETED" 
     ? existingRatings.find(r => r.reviewerId === user?.id && r.revieweeId === ride.driver.id)
@@ -104,7 +158,7 @@ export default async function RideDetails({
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
-      {isPassenger && (
+      {(isPassenger || isDriver) && (
         <PassengerWindowSync rideId={ride.id} currentStatus={ride.status} />
       )}
       <BackButton fallbackHref="/dashboard" label="Back" />
@@ -131,7 +185,14 @@ export default async function RideDetails({
             <div className="text-right flex flex-col items-end gap-2">
               <div>
                 <span className="text-3xl font-bold text-primary">₹{displayFare.toFixed(2)}</span>
-                <p className="text-sm text-muted-foreground font-medium">Total Ride Fare</p>
+                <p className="text-sm text-muted-foreground font-medium">
+                  {myBooking ? "Your Booking Fare" : "Total Ride Fare"}
+                </p>
+                {myBooking && myBooking.detourFare && myBooking.detourFare > 0 ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mt-0.5">
+                    Includes ₹{myBooking.detourFare.toFixed(2)} detour fee ({((myBooking.detourDistance || 0) / 1000).toFixed(2)} km)
+                  </p>
+                ) : null}
               </div>
               {isDriver && (
                 <div className="pt-1">
@@ -201,12 +262,22 @@ export default async function RideDetails({
             <div className="md:col-span-2">
               <ActiveRideLocationMap 
                 rideId={ride.id}
-                origin={ride.origin} 
-                destination={ride.destination} 
+                origin={
+                  typeof ride.originLat === "number" && typeof ride.originLon === "number" && !isNaN(ride.originLat) && !isNaN(ride.originLon)
+                    ? { name: ride.origin, lat: ride.originLat, lon: ride.originLon }
+                    : ride.origin
+                } 
+                destination={
+                  typeof ride.destLat === "number" && typeof ride.destLon === "number" && !isNaN(ride.destLat) && !isNaN(ride.destLon)
+                    ? { name: ride.destination, lat: ride.destLat, lon: ride.destLon }
+                    : ride.destination
+                } 
                 passengerOrigin={searchParams?.origin}
                 passengerDestination={searchParams?.destination}
                 isActive={ride.status === "ACTIVE"}
-                canShareLiveLocation={canSeeChat}
+                canShareLiveLocation={isDriver && ride.status === "ACTIVE"}
+                routeGeometry={parsedRouteGeometry}
+                stops={confirmedStops}
               />
             </div>
           </div>

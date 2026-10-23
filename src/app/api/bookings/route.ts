@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkPassengerEligibility } from "@/lib/dynamicRouting";
 
 export async function POST(req: Request) {
   try {
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { rideId, fare, preferredPassengerGender } = body;
+    const { rideId, fare, preferredPassengerGender, passengerOrigin, passengerDestination } = body;
 
     if (!rideId) {
       return NextResponse.json({ message: "Ride ID is required" }, { status: 400 });
@@ -65,7 +66,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "No seats available" }, { status: 400 });
     }
 
-    const hasBooked = ride.bookings.some(b => b.userId === userId);
+    const hasBooked = ride.bookings.some(b => b.userId === userId && b.status !== "CANCELLED" && b.status !== "REJECTED");
     if (hasBooked) {
       return NextResponse.json({ message: "You have already booked this ride" }, { status: 400 });
     }
@@ -101,7 +102,48 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3. Transaction to book and decrement seats
+    // 4. Validate passenger corridor eligibility and detour radius if custom points provided
+    let pickupLocation = passengerOrigin || ride.origin;
+    let dropLocation = passengerDestination || ride.destination;
+    let pickupLat = ride.originLat;
+    let pickupLon = ride.originLon;
+    let dropLat = ride.destLat;
+    let dropLon = ride.destLon;
+    let finalFare = fare ? parseFloat(fare) : (ride.price || 0);
+
+    let eligibility: Awaited<ReturnType<typeof checkPassengerEligibility>> | null = null;
+
+    if (passengerOrigin && passengerDestination && (passengerOrigin !== ride.origin || passengerDestination !== ride.destination)) {
+      eligibility = await checkPassengerEligibility({
+        rideId,
+        passengerOrigin,
+        passengerDestination,
+      });
+
+      if (!eligibility.eligible) {
+        return NextResponse.json(
+          { message: eligibility.reason || "You are not eligible for this ride based on route proximity or direction." },
+          { status: 400 }
+        );
+      }
+
+      pickupLocation = passengerOrigin;
+      dropLocation = passengerDestination;
+      pickupLat = eligibility.passStart?.lat ?? null;
+      pickupLon = eligibility.passStart?.lon ?? null;
+      dropLat = eligibility.passEnd?.lat ?? null;
+      dropLon = eligibility.passEnd?.lon ?? null;
+      if (typeof eligibility.fare === "number" && eligibility.fare > 0) {
+        finalFare = eligibility.fare;
+      }
+    }
+
+    const mainFare = eligibility?.mainFare ?? finalFare;
+    const detourFare = eligibility?.detourFare ?? 0;
+    const detourDistance = eligibility?.detourDistance ?? 0;
+    const fareBreakdown = eligibility?.fareBreakdown ? JSON.stringify(eligibility.fareBreakdown) : null;
+
+    // 5. Transaction to book and decrement seats
     const booking = await prisma.$transaction(async (tx) => {
       // Create the booking as PENDING for the driver to review
       const newBooking = await tx.booking.create({
@@ -109,9 +151,19 @@ export async function POST(req: Request) {
           rideId,
           userId,
           seats: 1,
-          fare: fare ? parseFloat(fare) : 0,
+          fare: finalFare,
+          mainFare,
+          detourFare,
+          detourDistance,
+          fareBreakdown,
           status: "PENDING",
           preferredPassengerGender: validGenderPref,
+          pickupLocation,
+          pickupLat,
+          pickupLon,
+          dropLocation,
+          dropLat,
+          dropLon,
         }
       });
 

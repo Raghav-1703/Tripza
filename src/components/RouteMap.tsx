@@ -10,30 +10,53 @@ const RouteMapClient = dynamic(() => import("./RouteMapClient"), {
 
 export type { RouteInfo, MapLocation };
 
+export interface RouteStopPoint {
+  id: string;
+  type: "PICKUP" | "DROP";
+  bookingId?: string;
+  passengerName?: string;
+  locationName: string;
+  lat: number;
+  lon: number;
+}
+
+export interface LiveLocationData {
+  lat: number;
+  lon: number;
+  heading?: number | null;
+  updatedAt?: string | null;
+}
+
 interface RouteMapProps {
   origin: string | MapLocation;
   destination: string | MapLocation;
   passengerOrigin?: string | MapLocation;
   passengerDestination?: string | MapLocation;
-  liveLocation?: { lat: number; lon: number } | null;
+  liveLocation?: LiveLocationData | null;
+  routeGeometry?: [number, number][];
+  stops?: RouteStopPoint[];
   onRouteCalculated?: (info: RouteInfo | null) => void;
 }
 
 export default function RouteMap({ 
   origin, 
   destination, 
-  passengerOrigin,
+  passengerOrigin, 
   passengerDestination,
   liveLocation,
+  routeGeometry,
+  stops,
   onRouteCalculated 
 }: RouteMapProps) {
   return (
     <RouteMapClient 
       origin={origin} 
       destination={destination} 
-      passengerOrigin={passengerOrigin}
+      passengerOrigin={passengerOrigin} 
       passengerDestination={passengerDestination}
       liveLocation={liveLocation}
+      routeGeometry={routeGeometry}
+      stops={stops}
       onRouteCalculated={onRouteCalculated} 
     />
   );

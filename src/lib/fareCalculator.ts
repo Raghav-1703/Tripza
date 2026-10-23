@@ -35,7 +35,9 @@ export function calculateFare({
 
   if (rideType === "Personal Cab") {
     mainRouteFare = mainDistanceKm * 20;
-    subtotal = mainRouteFare;
+    pickupDetourFare = pickupDetourKm * 20;
+    dropDetourFare = dropDetourKm * 20;
+    subtotal = mainRouteFare + pickupDetourFare + dropDetourFare;
     platformFee = subtotal * 0.03;
     passengerTotal = subtotal + platformFee;
     driverEarning = subtotal;
