@@ -4,7 +4,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Send, MessageSquare, ShieldCheck, X } from "lucide-react";
+import { Send, MessageSquare, ShieldCheck, X, Flag, Ban } from "lucide-react";
+import ReportUserModal from "@/components/ReportUserModal";
+import BlockUserModal from "@/components/BlockUserModal";
 
 interface Message {
   id: string;
@@ -168,7 +170,7 @@ export default function RideChat({ rideId, currentUserId, driverName, driverId, 
             return (
               <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
                 {!isMe && (
-                  <div className="text-[11px] font-semibold text-foreground/80 mb-1 ml-1 flex items-center gap-1.5">
+                  <div className="text-[11px] font-semibold text-foreground/80 mb-1 ml-1 flex items-center gap-1.5 flex-wrap">
                     <span>{msg.user.name}</span>
                     {isDriverMsg && (
                       <Badge variant="outline" className="text-[9px] px-1 py-0 border-blue-500/50 text-blue-600 dark:text-blue-400 bg-blue-500/10 flex items-center gap-0.5">
@@ -176,6 +178,33 @@ export default function RideChat({ rideId, currentUserId, driverName, driverId, 
                         Driver
                       </Badge>
                     )}
+                    <div className="flex items-center gap-1 ml-1.5 opacity-60 hover:opacity-100 transition-opacity">
+                      <ReportUserModal
+                        targetUserId={msg.user.id}
+                        targetUserName={msg.user.name}
+                        rideId={rideId}
+                        trigger={
+                          <span
+                            className="p-0.5 hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer inline-flex items-center"
+                            title={`Report ${msg.user.name}`}
+                          >
+                            <Flag className="h-3 w-3" />
+                          </span>
+                        }
+                      />
+                      <BlockUserModal
+                        targetUserId={msg.user.id}
+                        targetUserName={msg.user.name}
+                        trigger={
+                          <span
+                            className="p-0.5 hover:text-destructive cursor-pointer inline-flex items-center"
+                            title={`Block ${msg.user.name}`}
+                          >
+                            <Ban className="h-3 w-3" />
+                          </span>
+                        }
+                      />
+                    </div>
                   </div>
                 )}
                 

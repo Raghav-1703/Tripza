@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { areUsersBlocked } from "@/lib/block";
 
 export async function POST(req: Request) {
   try {
@@ -30,6 +31,14 @@ export async function POST(req: Request) {
 
     if (userId === revieweeId) {
       return NextResponse.json({ message: "You cannot rate yourself" }, { status: 400 });
+    }
+
+    // Enforce bidirectional block check
+    if (await areUsersBlocked(userId, revieweeId)) {
+      return NextResponse.json(
+        { message: "Ratings cannot be submitted between blocked users" },
+        { status: 403 }
+      );
     }
 
     const trimmedReview = typeof review === "string" ? review.trim() : null;

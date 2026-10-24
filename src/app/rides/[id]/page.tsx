@@ -14,6 +14,10 @@ import PassengerWindowSync from "@/components/PassengerWindowSync";
 import RatingForm from "@/components/RatingForm";
 import DriverPassengerRatings from "@/components/DriverPassengerRatings";
 import BackButton from "@/components/BackButton";
+import { getBidirectionalBlockedUserIds, getBlockRelationship } from "@/lib/block";
+import ReportUserModal from "@/components/ReportUserModal";
+import BlockUserModal from "@/components/BlockUserModal";
+import ShareTripModal from "@/components/ShareTripModal";
 
 export default async function RideDetails({ 
   params,
@@ -27,16 +31,16 @@ export default async function RideDetails({
 
   const dbUser = user?.id ? await prisma.user.findUnique({
     where: { id: user.id },
-    select: { gender: true, emergencyContactEmail: true, userType: true }
+    select: { gender: true, emergencyContactEmail: true, userType: true, phoneNumber: true }
   }) : null;
 
   const ride = await prisma.ride.findUnique({
     where: { id: params.id },
     include: {
-      driver: { select: { id: true, name: true, email: true, studentVerificationStatus: true, driverVerificationStatus: true } },
+      driver: { select: { id: true, name: true, email: true, phoneNumber: true, studentVerificationStatus: true, driverVerificationStatus: true } },
       bookings: {
         include: {
-          user: { select: { id: true, name: true } }
+          user: { select: { id: true, name: true, phoneNumber: true } }
         }
       },
     }
@@ -54,12 +58,26 @@ export default async function RideDetails({
     (b) => (b.status === "PENDING" || b.status === "CONFIRMED") && b.preferredPassengerGender === "FEMALE"
   );
 
+  const blockedUserIds = user?.id ? await getBidirectionalBlockedUserIds(user.id) : [];
+  const isBlockedWithDriver = user?.id ? blockedUserIds.includes(ride.driverId) : false;
+  const hasBlockedCoPassenger = user?.id
+    ? ride.bookings.some(
+        (b) => (b.status === "PENDING" || b.status === "CONFIRMED") && blockedUserIds.includes(b.userId)
+      )
+    : false;
+
+  const driverBlockRel = user?.id && user.id !== ride.driverId
+    ? await getBlockRelationship(user.id, ride.driverId)
+    : null;
+
   // Determine if the booking button should be disabled
   let disabledReason = "";
   if (!user) {
     disabledReason = "Sign in to book";
   } else if (ride.driverId === user.id) {
     disabledReason = "This is your ride";
+  } else if (isBlockedWithDriver || hasBlockedCoPassenger) {
+    disabledReason = "Booking unavailable (Block relationship)";
   } else if (ride.status === "COMPLETED") {
     disabledReason = "Ride has ended";
   } else if (ride.status === "CANCELLED") {
@@ -230,30 +248,115 @@ export default async function RideDetails({
                 <p className="text-xs text-muted-foreground mb-3">
                   If you encounter an emergency during this trip, press the SOS button below to alert your emergency contact immediately.
                 </p>
-                <SosButton rideId={ride.id} />
+                <div className="flex flex-wrap items-center gap-3">
+                  <SosButton rideId={ride.id} />
+                  <ShareTripModal rideId={ride.id} rideStatus={ride.status} />
+                </div>
               </div>
             </div>
           )}
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="md:col-span-1 bg-muted/50 p-6 rounded-lg space-y-4 flex flex-col justify-between">
-              <div>
-                <h3 className="text-sm font-medium text-muted-foreground">Driver</h3>
-                <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  <p className="text-lg font-medium">{ride.driver.name}</p>
-                  {ride.driver.driverVerificationStatus === "APPROVED" && (
-                    <Badge variant="default" className="bg-blue-600 hover:bg-blue-700 text-[10px]">
-                      ✓ Verified Driver
-                    </Badge>
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-sm font-medium text-muted-foreground">Driver</h3>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <p className="text-lg font-medium">{ride.driver.name}</p>
+                    {ride.driver.driverVerificationStatus === "APPROVED" && (
+                      <Badge variant="default" className="bg-blue-600 hover:bg-blue-700 text-[10px]">
+                        ✓ Verified Driver
+                      </Badge>
+                    )}
+                    {ride.driver.studentVerificationStatus === "APPROVED" && (
+                      <Badge variant="default" className="bg-emerald-600 hover:bg-emerald-700 text-[10px]">
+                        ✓ Verified Student
+                      </Badge>
+                    )}
+                  </div>
+                  {/* Authorized Driver Contact Number */}
+                  {isDriver && (
+                    <div className="mt-1.5 text-xs text-muted-foreground">
+                      <span className="font-mono">{ride.driver.phoneNumber ? `📞 ${ride.driver.phoneNumber}` : "No phone added to profile"}</span>
+                      <span className="block text-[10px] text-muted-foreground">Shared only with confirmed passengers</span>
+                    </div>
                   )}
-                  {ride.driver.studentVerificationStatus === "APPROVED" && (
-                    <Badge variant="default" className="bg-emerald-600 hover:bg-emerald-700 text-[10px]">
-                      ✓ Verified Student
-                    </Badge>
+                  {isPassenger && myBooking?.status === "CONFIRMED" && (
+                    <div className="mt-2 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                      <span className="font-semibold text-emerald-800 dark:text-emerald-300 block text-[11px]">
+                        Driver Contact (Confirmed Trip):
+                      </span>
+                      <span className="font-mono font-medium text-xs text-foreground block mt-0.5">
+                        {ride.driver.phoneNumber ? `📞 ${ride.driver.phoneNumber}` : "Driver has not added a phone number"}
+                      </span>
+                    </div>
+                  )}
+                  {isPassenger && myBooking?.status === "PENDING" && (
+                    <p className="mt-1 text-[11px] text-muted-foreground italic">
+                      Driver contact available once booking is confirmed.
+                    </p>
                   )}
                 </div>
+
+                {user?.id && user.id !== ride.driverId && (
+                  <div className="flex items-center gap-2 pt-2 border-t flex-wrap">
+                    <ReportUserModal
+                      targetUserId={ride.driver.id}
+                      targetUserName={ride.driver.name}
+                      rideId={ride.id}
+                    />
+                    <BlockUserModal
+                      targetUserId={ride.driver.id}
+                      targetUserName={ride.driver.name}
+                      initialIsBlocked={driverBlockRel?.blockedByMe ?? false}
+                    />
+                  </div>
+                )}
+
+                {isDriver && ride.bookings.some((b) => b.status === "CONFIRMED" || b.status === "PENDING") && (
+                  <div className="pt-3 border-t space-y-2">
+                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Passengers
+                    </h4>
+                    <div className="space-y-1.5">
+                      {ride.bookings
+                        .filter((b) => b.status === "CONFIRMED" || b.status === "PENDING")
+                        .map((b) => (
+                          <div key={b.id} className="flex flex-col gap-1.5 text-xs bg-background p-2 rounded-lg border">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-foreground">{b.user.name}</span>
+                              <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                {b.status}
+                              </Badge>
+                            </div>
+                            {b.status === "CONFIRMED" ? (
+                              <div className="text-[11px] font-mono text-muted-foreground bg-muted/40 px-2 py-1 rounded">
+                                {b.user.phoneNumber ? `📞 ${b.user.phoneNumber}` : "No phone provided"}
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-muted-foreground italic">
+                                Phone visible once confirmed
+                              </div>
+                            )}
+                            <div className="flex items-center gap-1.5 pt-1">
+                              <ReportUserModal
+                                targetUserId={b.user.id}
+                                targetUserName={b.user.name}
+                                rideId={ride.id}
+                              />
+                              <BlockUserModal
+                                targetUserId={b.user.id}
+                                targetUserName={b.user.name}
+                                initialIsBlocked={blockedUserIds.includes(b.user.id)}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
-              <div>
+              <div className="pt-2 border-t">
                 <h3 className="text-sm font-medium text-muted-foreground">Available Seats</h3>
                 <p className="text-lg font-medium">{ride.seats}</p>
               </div>
@@ -291,16 +394,20 @@ export default async function RideDetails({
                  passengerOrigin={displayOrigin} 
                  passengerDestination={displayDestination} 
                  userGender={dbUser?.gender}
+                 userPhone={dbUser?.phoneNumber}
               />
             </div>
             {canSeeChat && user?.id && (
-              <RideChatModal
-                rideId={ride.id}
-                currentUserId={user.id}
-                driverName={ride.driver.name}
-                driverId={ride.driver.id}
-                isDriver={isDriver}
-              />
+              <div className="flex items-center gap-2">
+                <ShareTripModal rideId={ride.id} rideStatus={ride.status} />
+                <RideChatModal
+                  rideId={ride.id}
+                  currentUserId={user.id}
+                  driverName={ride.driver.name}
+                  driverId={ride.driver.id}
+                  isDriver={isDriver}
+                />
+              </div>
             )}
           </div>
 

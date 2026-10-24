@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getBidirectionalBlockedUserIds } from "@/lib/block";
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -65,6 +66,20 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
     if (!isDriver && !isPassenger) {
       return NextResponse.json({ message: "Forbidden. You must be a driver or active passenger on this ride." }, { status: 403 });
+    }
+
+    // Enforce bidirectional block check: sender cannot chat if blocked by or having blocked any active participant
+    const blockedUserIds = await getBidirectionalBlockedUserIds(user.id);
+    const otherParticipantIds = [
+      ride.driverId,
+      ...ride.bookings.filter(b => b.status === "PENDING" || b.status === "CONFIRMED").map(b => b.userId)
+    ].filter(id => id !== user.id);
+
+    if (otherParticipantIds.some(id => blockedUserIds.includes(id))) {
+      return NextResponse.json(
+        { message: "Messaging unavailable: A participant in this ride has a block relationship with you." },
+        { status: 403 }
+      );
     }
 
     const { content } = await req.json();

@@ -12,6 +12,8 @@ import { LocationInput, LocationSuggestion } from "@/components/LocationInput";
 import { calculateFare } from "@/lib/fareCalculator";
 import BackButton from "@/components/BackButton";
 
+import Link from "next/link";
+
 const SEAT_OPTIONS = [1, 4, 6];
 
 export default function CreateRide() {
@@ -20,8 +22,9 @@ export default function CreateRide() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
+  const [driverPhone, setDriverPhone] = useState<string | null>(null);
 
-  // Protect route: redirect non-drivers to dashboard
+  // Protect route: redirect non-drivers to dashboard and load driver profile phone
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/login");
@@ -30,6 +33,14 @@ export default function CreateRide() {
       if (userType !== "DRIVER" && userType !== "BOTH") {
         router.push("/dashboard");
       }
+      fetch("/api/user/profile")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.phoneNumber) {
+            setDriverPhone(data.phoneNumber);
+          }
+        })
+        .catch(() => {});
     }
   }, [status, session, router]);
 
@@ -141,6 +152,25 @@ export default function CreateRide() {
                 {error}
               </div>
             )}
+
+            <div className="p-3 rounded-lg border bg-muted/30 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <span className="font-semibold text-foreground block">
+                  Driver Coordination Phone
+                </span>
+                <span className="text-muted-foreground text-[11px]">
+                  {driverPhone 
+                    ? `📞 ${driverPhone} — Visible strictly to confirmed passengers.`
+                    : "No personal phone saved in your profile yet (optional)."}
+                </span>
+              </div>
+              <Link
+                href="/profile"
+                className="text-primary hover:underline font-medium text-xs whitespace-nowrap self-start sm:self-auto"
+              >
+                {driverPhone ? "Edit in Profile" : "+ Add in Profile"}
+              </Link>
+            </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1.5">

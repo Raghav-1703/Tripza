@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { Gender } from "@prisma/client";
+import { validateAndNormalizePhone } from "@/lib/phoneValidation";
 
 export async function GET() {
   try {
@@ -19,6 +20,7 @@ export async function GET() {
         id: true,
         name: true,
         email: true,
+        phoneNumber: true,
         role: true,
         userType: true,
         gender: true,
@@ -51,10 +53,24 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
-    const { gender, emergencyContactName, emergencyContactEmail, emergencyContactPhone } = await req.json();
+    const { phoneNumber, gender, emergencyContactName, emergencyContactEmail, emergencyContactPhone } = await req.json();
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const phoneRegex = /^[0-9+\s\-()]{7,20}$/;
+
+    // Validate own phone number if provided
+    let normalizedOwnPhone: string | null | undefined = undefined;
+    if (phoneNumber !== undefined) {
+      if (phoneNumber === null || (typeof phoneNumber === "string" && phoneNumber.trim() === "")) {
+        normalizedOwnPhone = null;
+      } else {
+        const phoneValidation = validateAndNormalizePhone(phoneNumber);
+        if (!phoneValidation.isValid) {
+          return NextResponse.json({ message: phoneValidation.error }, { status: 400 });
+        }
+        normalizedOwnPhone = phoneValidation.normalized!;
+      }
+    }
 
     // Validate gender if provided
     const validGenders = ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"];
@@ -84,6 +100,7 @@ export async function PATCH(req: Request) {
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
+        ...(normalizedOwnPhone !== undefined ? { phoneNumber: normalizedOwnPhone } : {}),
         ...(genderToUpdate ? { gender: genderToUpdate as Gender } : {}),
         emergencyContactName: emergencyContactName !== undefined ? (emergencyContactName?.trim() || null) : undefined,
         emergencyContactEmail: emergencyContactEmail !== undefined ? (emergencyContactEmail?.trim()?.toLowerCase() || null) : undefined,
@@ -93,6 +110,7 @@ export async function PATCH(req: Request) {
         id: true,
         name: true,
         email: true,
+        phoneNumber: true,
         role: true,
         userType: true,
         gender: true,

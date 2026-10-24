@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { getPublicAppOrigin } from "@/lib/appUrl";
 
 export interface EmergencyNotificationPayload {
   passengerName: string;
@@ -53,7 +54,8 @@ export async function sendEmergencyEmail(payload: EmergencyNotificationPayload):
   const smtpPass = process.env.SMTP_PASS?.trim() || process.env.SMTP_PASSWORD?.trim();
   const emailFrom = process.env.EMAIL_FROM?.trim() || process.env.SOS_FROM_EMAIL?.trim() || `"TPool Emergency Alert" <no-reply@tpool.local>`;
 
-  const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const { origin } = getPublicAppOrigin();
+  const baseUrl = origin || process.env.NEXTAUTH_URL || "http://localhost:3000";
   const trackingUrl = `${baseUrl}/rides/${payload.rideId}`;
 
   const locationText = (payload.latitude != null && payload.longitude != null && !isNaN(payload.latitude) && !isNaN(payload.longitude))

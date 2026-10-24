@@ -11,6 +11,7 @@ interface BookingButtonProps {
   passengerOrigin?: string;
   passengerDestination?: string;
   userGender?: string | null;
+  userPhone?: string | null;
 }
 
 export default function BookingButton({ 
@@ -19,11 +20,13 @@ export default function BookingButton({
   fare,
   passengerOrigin,
   passengerDestination,
-  userGender 
+  userGender,
+  userPhone,
 }: BookingButtonProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [preferredPassengerGender, setPreferredPassengerGender] = useState<"ANY" | "FEMALE">("ANY");
+  const [phoneInput, setPhoneInput] = useState("");
   const [error, setError] = useState("");
 
   const isFemalePassenger = userGender === "FEMALE";
@@ -41,7 +44,8 @@ export default function BookingButton({
           fare,
           passengerOrigin,
           passengerDestination,
-          preferredPassengerGender: isFemalePassenger ? preferredPassengerGender : "ANY"
+          preferredPassengerGender: isFemalePassenger ? preferredPassengerGender : "ANY",
+          passengerPhone: phoneInput.trim() || undefined,
         }),
       });
 
@@ -65,11 +69,44 @@ export default function BookingButton({
   return (
     <div className="space-y-4">
       {!disabledReason && (
-        <div className="bg-muted/40 p-4 rounded-lg border space-y-2">
-          <label className="text-sm font-semibold text-foreground flex items-center justify-between">
-            <span>Seat Sharing Preference</span>
-            <span className="text-xs font-normal text-muted-foreground">For co-passengers</span>
-          </label>
+        <>
+          {userPhone ? (
+            <div className="bg-muted/40 p-3 rounded-lg border flex items-center justify-between text-xs">
+              <div>
+                <span className="font-semibold text-foreground block">Contact Phone Number</span>
+                <span className="text-muted-foreground text-[11px]">Shared with driver upon booking confirmation</span>
+              </div>
+              <span className="font-mono font-medium text-foreground bg-background px-2.5 py-1 rounded border">
+                📞 {userPhone}
+              </span>
+            </div>
+          ) : (
+            <div className="bg-muted/40 p-3 rounded-lg border space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <label htmlFor="booking-phone" className="font-semibold text-foreground">
+                  Phone Number (optional)
+                </label>
+                <span className="text-[11px] text-muted-foreground">For driver pickup coordination</span>
+              </div>
+              <input
+                id="booking-phone"
+                type="tel"
+                placeholder="e.g. +91 98765 43210"
+                value={phoneInput}
+                onChange={(e) => setPhoneInput(e.target.value)}
+                className="w-full h-8 px-2.5 text-xs font-mono rounded border bg-background"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Optionally provide your phone number. Shared only with your driver if confirmed.
+              </p>
+            </div>
+          )}
+
+          <div className="bg-muted/40 p-4 rounded-lg border space-y-2">
+            <label className="text-sm font-semibold text-foreground flex items-center justify-between">
+              <span>Seat Sharing Preference</span>
+              <span className="text-xs font-normal text-muted-foreground">For co-passengers</span>
+            </label>
           
           {isFemalePassenger ? (
             <div className="grid grid-cols-2 gap-2 pt-1">
@@ -120,7 +157,8 @@ export default function BookingButton({
             This indicates your preference for other passengers sharing the ride. The driver&apos;s gender is not affected by this selection.
           </p>
         </div>
-      )}
+      </>
+    )}
 
       <Button 
         className="w-full" 

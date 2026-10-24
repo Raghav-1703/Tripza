@@ -1,9 +1,10 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
-import { useEffect, useState, useRef } from "react";
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
-import L from "leaflet";
+import { useEffect, useState, useRef, ReactNode, CSSProperties } from "react";
+import { TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
+import { LeafletProvider, createLeafletContext } from "@react-leaflet/core";
+import L, { Map as LeafletMap, MapOptions } from "leaflet";
 import type { LiveLocationData } from "./RouteMap";
 import { resolveLocationText } from "@/lib/locationSearch";
 
@@ -337,6 +338,99 @@ function decodePolyline6(str: string): [number, number][] {
   return coordinates;
 }
 
+interface LeafletContainerElement extends HTMLDivElement {
+  _leaflet_id?: number;
+  _leaflet_map?: LeafletMap;
+}
+
+type LeafletContextType = ReturnType<typeof createLeafletContext>;
+
+interface SafeMapContainerProps extends MapOptions {
+  center: [number, number];
+  zoom: number;
+  scrollWheelZoom?: boolean;
+  style?: CSSProperties;
+  className?: string;
+  children: ReactNode;
+}
+
+/**
+ * SafeMapContainer provides strict single-ownership of the Leaflet Map instance.
+ * Completely eliminates the React 18 / React-Leaflet "Map container is already initialized"
+ * bug by tracking the map instance with a synchronous ref and ensuring proper DOM cleanup on unmount.
+ */
+function SafeMapContainer({
+  center,
+  zoom,
+  style,
+  className,
+  children,
+  ...options
+}: SafeMapContainerProps) {
+  const containerRef = useRef<LeafletContainerElement | null>(null);
+  const mapInstanceRef = useRef<LeafletMap | null>(null);
+  const [context, setContext] = useState<LeafletContextType | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // React 18 Strict Mode and remount safety:
+    // If a Leaflet instance or ID is already present on this DOM element, clean it up first
+    if (container._leaflet_id) {
+      if (mapInstanceRef.current) {
+        try {
+          mapInstanceRef.current.remove();
+        } catch {
+          // Ignore potential removal error
+        }
+        mapInstanceRef.current = null;
+      }
+      delete container._leaflet_id;
+      container.innerHTML = "";
+    }
+
+    // Initialize the Leaflet map exactly once on the container
+    const map = new LeafletMap(container, {
+      ...options,
+      center,
+      zoom,
+    });
+    mapInstanceRef.current = map;
+    container._leaflet_map = map;
+
+    // Create Leaflet context for child layers (TileLayer, Marker, Polyline, useMap)
+    const leafletContext = createLeafletContext(map);
+    setContext(leafletContext);
+
+    // Guaranteed unmount cleanup
+    return () => {
+      if (mapInstanceRef.current) {
+        try {
+          mapInstanceRef.current.remove();
+        } catch {
+          // Ignore potential removal error
+        }
+        mapInstanceRef.current = null;
+      }
+      if (container) {
+        delete container._leaflet_id;
+        delete container._leaflet_map;
+        container.innerHTML = "";
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div ref={containerRef} style={style} className={className}>
+      {context ? (
+        <LeafletProvider value={context}>{children}</LeafletProvider>
+      ) : null}
+    </div>
+  );
+}
+
 export default function RouteMapClient({ 
   origin, 
   destination, 
@@ -347,12 +441,36 @@ export default function RouteMapClient({
   stops,
   onRouteCalculated 
 }: RouteMapClientProps) {
-  const [startLoc, setStartLoc] = useState<Location | null>(null);
-  const [endLoc, setEndLoc] = useState<Location | null>(null);
-  const [passStartLoc, setPassStartLoc] = useState<Location | null>(null);
-  const [passEndLoc, setPassEndLoc] = useState<Location | null>(null);
+  const [startLoc, setStartLoc] = useState<Location | null>(() => {
+    if (origin && typeof origin === "object" && typeof origin.lat === "number" && typeof origin.lon === "number" && isValidCoord(origin.lat, origin.lon)) {
+      return { name: origin.name || "Origin", lat: origin.lat, lon: origin.lon };
+    }
+    return null;
+  });
+  const [endLoc, setEndLoc] = useState<Location | null>(() => {
+    if (destination && typeof destination === "object" && typeof destination.lat === "number" && typeof destination.lon === "number" && isValidCoord(destination.lat, destination.lon)) {
+      return { name: destination.name || "Destination", lat: destination.lat, lon: destination.lon };
+    }
+    return null;
+  });
+  const [passStartLoc, setPassStartLoc] = useState<Location | null>(() => {
+    if (passengerOrigin && typeof passengerOrigin === "object" && typeof passengerOrigin.lat === "number" && typeof passengerOrigin.lon === "number" && isValidCoord(passengerOrigin.lat, passengerOrigin.lon)) {
+      return { name: passengerOrigin.name || "Pickup", lat: passengerOrigin.lat, lon: passengerOrigin.lon };
+    }
+    return null;
+  });
+  const [passEndLoc, setPassEndLoc] = useState<Location | null>(() => {
+    if (passengerDestination && typeof passengerDestination === "object" && typeof passengerDestination.lat === "number" && typeof passengerDestination.lon === "number" && isValidCoord(passengerDestination.lat, passengerDestination.lon)) {
+      return { name: passengerDestination.name || "Drop-off", lat: passengerDestination.lat, lon: passengerDestination.lon };
+    }
+    return null;
+  });
   const [routePositions, setRoutePositions] = useState<[number, number][]>(routeGeometry || []);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => {
+    const hasOrigin = origin && typeof origin === "object" && isValidCoord(origin.lat, origin.lon);
+    const hasDest = destination && typeof destination === "object" && isValidCoord(destination.lat, destination.lon);
+    return !(hasOrigin && hasDest);
+  });
   const [error, setError] = useState(false);
 
   // Synchronize route positions immediately whenever routeGeometry changes
@@ -559,7 +677,7 @@ export default function RouteMapClient({
 
   return (
     <div className="h-full w-full rounded-lg overflow-hidden border relative z-0 isolate">
-      <MapContainer 
+      <SafeMapContainer 
         center={[(startLoc.lat + endLoc.lat) / 2, (startLoc.lon + endLoc.lon) / 2]} 
         zoom={13} 
         scrollWheelZoom={false} 
@@ -629,7 +747,7 @@ export default function RouteMapClient({
         <DriverFollower liveLocation={liveLocation} />
 
         <FitBounds start={startLoc} end={endLoc} routePositions={routePositions} />
-      </MapContainer>
+      </SafeMapContainer>
     </div>
   );
 }

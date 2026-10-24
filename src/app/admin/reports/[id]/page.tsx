@@ -12,7 +12,7 @@ export default async function AdminReportDetailPage({ params }: { params: { id: 
     where: { id: params.id },
     include: {
       reporter: { select: { id: true, name: true, email: true } },
-      reportedUser: { select: { id: true, name: true, email: true } },
+      reportedUser: { select: { id: true, name: true, email: true, status: true } },
       ride: { select: { id: true, origin: true, destination: true } },
     },
   });
@@ -67,15 +67,26 @@ export default async function AdminReportDetailPage({ params }: { params: { id: 
               )}
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Reason / Details</span>
-              <p className="bg-muted/50 p-3 rounded-md border mt-1">{report.reason}</p>
+              <span className="text-xs text-muted-foreground block">Reason</span>
+              <p className="bg-muted/50 p-3 rounded-md border mt-1 font-medium">{report.reason}</p>
             </div>
+            {report.description && (
+              <div>
+                <span className="text-xs text-muted-foreground block">Description / Details</span>
+                <p className="bg-muted/50 p-3 rounded-md border mt-1 whitespace-pre-wrap">{report.description}</p>
+              </div>
+            )}
           </div>
         </Card>
       </div>
 
       <Card className="p-6">
-        <AdminReportActions reportId={report.id} />
+        <AdminReportActions
+          reportId={report.id}
+          reportedUserId={report.reportedUser?.id}
+          reportedUserName={report.reportedUser?.name}
+          reportedUserStatus={report.reportedUser?.status}
+        />
       </Card>
     </div>
   );

@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { checkPassengerEligibility } from "@/lib/dynamicRouting";
+import { getBidirectionalBlockedUserIds } from "@/lib/block";
+import { validateAndNormalizePhone } from "@/lib/phoneValidation";
 
 export async function POST(req: Request) {
   try {
@@ -21,7 +23,7 @@ export async function POST(req: Request) {
 
     const dbUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, gender: true, userType: true }
+      select: { id: true, gender: true, userType: true, phoneNumber: true }
     });
 
     if (!dbUser) {
@@ -29,7 +31,19 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { rideId, fare, preferredPassengerGender, passengerOrigin, passengerDestination } = body;
+    const { rideId, fare, preferredPassengerGender, passengerOrigin, passengerDestination, passengerPhone } = body;
+
+    // If passenger doesn't have a phone in profile and provides one, validate and save it
+    if (!dbUser.phoneNumber && passengerPhone && typeof passengerPhone === "string" && passengerPhone.trim() !== "") {
+      const phoneValidation = validateAndNormalizePhone(passengerPhone);
+      if (!phoneValidation.isValid) {
+        return NextResponse.json({ message: phoneValidation.error || "Invalid phone number" }, { status: 400 });
+      }
+      await prisma.user.update({
+        where: { id: userId },
+        data: { phoneNumber: phoneValidation.normalized }
+      });
+    }
 
     if (!rideId) {
       return NextResponse.json({ message: "Ride ID is required" }, { status: 400 });
@@ -71,7 +85,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "You have already booked this ride" }, { status: 400 });
     }
 
-    // 3. Check female co-passenger preference enforcement on active bookings
+    // 3. Enforce bidirectional block restrictions (with driver and active passengers)
+    const blockedUserIds = await getBidirectionalBlockedUserIds(userId);
+    if (blockedUserIds.includes(ride.driverId)) {
+      return NextResponse.json(
+        { message: "Booking unavailable: You cannot book a ride with a blocked user." },
+        { status: 403 }
+      );
+    }
+
+    // 4. Check female co-passenger preference enforcement on active bookings
     const activeBookings = await prisma.booking.findMany({
       where: {
         rideId,
@@ -81,6 +104,14 @@ export async function POST(req: Request) {
         user: { select: { gender: true } }
       }
     });
+
+    const hasBlockedCoPassenger = activeBookings.some((b) => blockedUserIds.includes(b.userId));
+    if (hasBlockedCoPassenger) {
+      return NextResponse.json(
+        { message: "Booking unavailable: An active passenger on this ride has a block relationship with you." },
+        { status: 403 }
+      );
+    }
 
     // Scenario A/B: If active female preference exists on ride, non-female users are rejected
     const activeFemalePref = activeBookings.some(b => b.preferredPassengerGender === "FEMALE");

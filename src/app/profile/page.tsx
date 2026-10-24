@@ -6,6 +6,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { prisma } from "@/lib/prisma";
 import ProfileSafetyForm from "@/components/ProfileSafetyForm";
+import ProfileAccountForm from "@/components/ProfileAccountForm";
+import BlockedUsersList from "@/components/BlockedUsersList";
+import ContactManagement from "@/components/ContactManagement";
 
 export default async function Profile() {
   const session = await getServerSession(authOptions);
@@ -143,6 +146,13 @@ export default async function Profile() {
             <span className="font-semibold text-sm text-muted-foreground block">Member Since</span>
             <span className="text-base">{new Date(user.createdAt).toLocaleDateString()}</span>
           </div>
+
+          <div className="pt-4 border-t">
+            <ProfileAccountForm
+              initialPhone={user.phoneNumber}
+              initialGender={user.gender}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -278,6 +288,32 @@ export default async function Profile() {
           </CardContent>
         </Card>
       )}
+
+      {/* TRUSTED & EMERGENCY CONTACTS (FOR BOTH PASSENGERS AND DRIVERS) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Trusted &amp; Emergency Contacts</CardTitle>
+          <CardDescription>
+            Manage personal and emergency contacts for instant trip sharing and emergency notifications.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ContactManagement />
+        </CardContent>
+      </Card>
+
+      {/* BLOCKED USERS MANAGEMENT */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Safety &amp; Blocked Accounts</CardTitle>
+          <CardDescription>
+            Manage users you have restricted from booking, chatting, or matching with you.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <BlockedUsersList />
+        </CardContent>
+      </Card>
     </div>
   );
 }

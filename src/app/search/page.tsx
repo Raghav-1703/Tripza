@@ -6,6 +6,9 @@ import { cn } from "@/lib/utils";
 import { geocode, decodePolyline6, pointToRouteDistance, getRouteSegmentDistance } from "@/lib/geo";
 import { calculateFare } from "@/lib/fareCalculator";
 import { fetchRoadDistance, calculateRoadDetourDistance } from "@/lib/dynamicRouting";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { getBidirectionalBlockedUserIds } from "@/lib/block";
 import BackButton from "@/components/BackButton";
 
 // Allow Next.js to dynamically render this page on every request
@@ -16,6 +19,10 @@ export default async function SearchResults({
 }: {
   searchParams: { origin?: string; destination?: string; originLat?: string; originLon?: string; destLat?: string; destLon?: string };
 }) {
+  const session = await getServerSession(authOptions);
+  const currentUserId = session?.user?.id;
+  const blockedUserIds = currentUserId ? await getBidirectionalBlockedUserIds(currentUserId) : [];
+
   const origin = searchParams.origin || "";
   const destination = searchParams.destination || "";
   const reqOriginLat = searchParams.originLat ? parseFloat(searchParams.originLat) : null;
@@ -33,18 +40,28 @@ export default async function SearchResults({
     : (destination ? await geocode(destination) : null);
 
   // 2. Fetch all available future rides (SCHEDULED status only, within 15 mins grace period)
+  // Exclude rides where the driver or an active co-passenger has a bidirectional block with current user
   const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
   const allRides = await prisma.ride.findMany({
     where: {
       status: "SCHEDULED",
       seats: { gt: 0 },
       departure: { gte: fifteenMinutesAgo },
+      ...(blockedUserIds.length > 0 ? {
+        driverId: { notIn: blockedUserIds },
+        bookings: {
+          none: {
+            userId: { in: blockedUserIds },
+            status: { in: ["PENDING", "CONFIRMED"] }
+          }
+        }
+      } : {})
     },
     include: {
       driver: { select: { name: true, studentVerificationStatus: true, driverVerificationStatus: true } },
       bookings: {
         where: { status: { in: ["PENDING", "CONFIRMED"] } },
-        select: { preferredPassengerGender: true },
+        select: { preferredPassengerGender: true, userId: true },
       },
     },
     orderBy: { departure: "asc" },

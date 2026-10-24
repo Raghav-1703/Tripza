@@ -76,6 +76,7 @@ model User {
   userType                  UserType           @default(PASSENGER)
   status                    UserStatus         @default(ACTIVE)
   gender                    Gender?            @default(PREFER_NOT_TO_SAY)
+  phoneNumber               String?
   emergencyContactName      String?
   emergencyContactEmail     String?
   emergencyContactPhone     String?
@@ -89,9 +90,13 @@ model User {
   reviewedVerifications     Verification[]     @relation("AdminVerifications")
   reportsSubmitted          Report[]           @relation("ReporterUser")
   reportsReceived           Report[]           @relation("ReportedUser")
+  blocksInitiated           Block[]            @relation("BlocksInitiated")
+  blocksReceived            Block[]            @relation("BlocksReceived")
   emergencyAlerts           EmergencyAlert[]
   ratingsGiven              Rating[]           @relation("RatingsGiven")
   ratingsReceived           Rating[]           @relation("RatingsReceived")
+  trustedContacts           TrustedContact[]   @relation("UserContacts")
+  sharedTokens              TripShareToken[]   @relation("SharedTokens")
 }
 
 model Ride {
@@ -126,6 +131,7 @@ model Ride {
   reports         Report[]
   emergencyAlerts EmergencyAlert[]
   ratings         Rating[]
+  shareTokens     TripShareToken[]
 }
 
 model Booking {
@@ -152,6 +158,7 @@ model Booking {
   user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   emergencyAlerts         EmergencyAlert[]
   ratings                 Rating[]
+  shareTokens             TripShareToken[]
 }
 
 model EmergencyAlert {
@@ -224,6 +231,7 @@ model Report {
   reportedUserId String?
   rideId         String?
   reason         String
+  description    String?
   status         ReportStatus @default(PENDING)
   createdAt      DateTime     @default(now())
 
@@ -231,3 +239,55 @@ model Report {
   reportedUser   User?        @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: SetNull)
   ride           Ride?        @relation(fields: [rideId], references: [id], onDelete: SetNull)
 }
+
+model Block {
+  id        String   @id @default(cuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker   User     @relation("BlocksInitiated", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("BlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
+}
+
+model TrustedContact {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  phone       String
+  isEmergency Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation("UserContacts", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, phone])
+  @@index([userId])
+}
+
+model TripShareToken {
+  id              String    @id @default(cuid())
+  token           String    @unique
+  rideId          String
+  userId          String
+  bookingId       String?
+  recipientName   String?
+  recipientPhone  String?
+  isRevoked       Boolean   @default(false)
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  ride            Ride      @relation(fields: [rideId], references: [id], onDelete: Cascade)
+  user            User      @relation("SharedTokens", fields: [userId], references: [id], onDelete: Cascade)
+  booking         Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@index([token])
+  @@index([rideId])
+  @@index([userId])
+}
+

@@ -86,7 +86,7 @@ export async function POST(req: Request) {
     }
 
     let baseRouteGeometry: string | null = null;
-    let baseDistance: number | null = parsedDistance;
+    const baseDistance: number | null = parsedDistance;
 
     if (
       finalOriginLat !== null &&
