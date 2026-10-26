@@ -3,9 +3,9 @@ import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { geocode, decodePolyline6, pointToRouteDistance, getRouteSegmentDistance } from "@/lib/geo";
+import { geocode } from "@/lib/geo";
 import { calculateFare } from "@/lib/fareCalculator";
-import { fetchRoadDistance, calculateRoadDetourDistance } from "@/lib/dynamicRouting";
+import { checkPassengerEligibility } from "@/lib/dynamicRouting";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getBidirectionalBlockedUserIds } from "@/lib/block";
@@ -39,14 +39,17 @@ export default async function SearchResults({
     ? { lat: reqDestLat, lon: reqDestLon }
     : (destination ? await geocode(destination) : null);
 
-  // 2. Fetch all available future rides (SCHEDULED status only, within 15 mins grace period)
+  // 2. Fetch all available scheduled AND active rides with seats remaining
   // Exclude rides where the driver or an active co-passenger has a bidirectional block with current user
   const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
   const allRides = await prisma.ride.findMany({
     where: {
-      status: "SCHEDULED",
+      status: { in: ["SCHEDULED", "ACTIVE"] },
       seats: { gt: 0 },
-      departure: { gte: fifteenMinutesAgo },
+      OR: [
+        { status: "ACTIVE" },
+        { status: "SCHEDULED", departure: { gte: fifteenMinutesAgo } },
+      ],
       ...(blockedUserIds.length > 0 ? {
         driverId: { notIn: blockedUserIds },
         bookings: {
@@ -64,7 +67,7 @@ export default async function SearchResults({
         select: { preferredPassengerGender: true, userId: true },
       },
     },
-    orderBy: { departure: "asc" },
+    orderBy: [{ status: "asc" }, { departure: "asc" }],
   });
 
   const matchedRides = [];
@@ -81,145 +84,21 @@ export default async function SearchResults({
       continue;
     }
 
-    // 3. Geocode driver locations if missing
-    const driverStart = (ride.originLat !== null && ride.originLat !== undefined && ride.originLon !== null && ride.originLon !== undefined) 
-      ? { lat: ride.originLat, lon: ride.originLon } 
-      : await geocode(ride.origin);
-    const driverEnd = (ride.destLat !== null && ride.destLat !== undefined && ride.destLon !== null && ride.destLon !== undefined) 
-      ? { lat: ride.destLat, lon: ride.destLon } 
-      : await geocode(ride.destination);
+    // Evaluate passenger journey against route using authoritative eligibility engine
+    const eligibility = await checkPassengerEligibility({
+      rideId: ride.id,
+      passengerOrigin: origin || ride.origin,
+      passengerDestination: destination || ride.destination,
+      passengerOriginCoords: passStart,
+      passengerDestinationCoords: passEnd,
+    });
 
-    if (driverStart && driverEnd) {
-      let points: [number, number][] = [[driverStart.lat, driverStart.lon], [driverEnd.lat, driverEnd.lon]];
-
-      // Prefer baseline A -> B route geometry from database if present
-      if (ride.baseRouteGeometry) {
-        try {
-          const parsed = JSON.parse(ride.baseRouteGeometry);
-          if (Array.isArray(parsed) && parsed.length > 1) {
-            points = parsed;
-          }
-        } catch {}
-      } else if (ride.routeGeometry) {
-        try {
-          const parsed = JSON.parse(ride.routeGeometry);
-          if (Array.isArray(parsed) && parsed.length > 2) {
-            points = parsed;
-          }
-        } catch {}
-      }
-
-      // If points still empty or 2 points, fetch original route geometry from Valhalla
-      if (points.length <= 2) {
-        try {
-          const payloadFastest = {
-            locations: [{ lat: driverStart.lat, lon: driverStart.lon }, { lat: driverEnd.lat, lon: driverEnd.lon }],
-            costing: "auto",
-            costing_options: { auto: { shortest: false } }
-          };
-          const res = await fetch("https://valhalla1.openstreetmap.de/route", { 
-            method: "POST", 
-            headers: { "Content-Type": "application/json" }, 
-            body: JSON.stringify(payloadFastest) 
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.trip && data.trip.legs && data.trip.legs.length > 0) {
-              const shape = data.trip.legs[0].shape;
-              points = decodePolyline6(shape);
-            }
-          }
-        } catch (e) {
-          console.error("Valhalla routing error, falling back to straight-line:", e);
-        }
-      }
-
-      let matched = false;
-      let pickupInfo: ReturnType<typeof pointToRouteDistance> | null = null;
-      let dropInfo: ReturnType<typeof pointToRouteDistance> | null = null;
-
-      // Allowable limit: 2.0 km (testing buffer)
-      const maxDist = 2.0;
-
-      // 5. Calculate proximity to route
-      if (passStart && passEnd) {
-        pickupInfo = pointToRouteDistance(passStart.lat, passStart.lon, points);
-        dropInfo = pointToRouteDistance(passEnd.lat, passEnd.lon, points);
-        
-        const isDirectionValid = pickupInfo.minIndex < dropInfo.minIndex || 
-          (pickupInfo.minIndex === dropInfo.minIndex && pickupInfo.minProj.t <= dropInfo.minProj.t);
-
-        // 6. Check tolerance and valid direction
-        if (pickupInfo.minDist <= maxDist && dropInfo.minDist <= maxDist && isDirectionValid) {
-          matched = true;
-        }
-      } else if (passStart) {
-        pickupInfo = pointToRouteDistance(passStart.lat, passStart.lon, points);
-        if (pickupInfo.minDist <= maxDist) matched = true;
-      } else if (passEnd) {
-        dropInfo = pointToRouteDistance(passEnd.lat, passEnd.lon, points);
-        if (dropInfo.minDist <= maxDist) matched = true;
-      }
-
-      if (matched) {
-        let segmentDistanceMeters = ride.distance || 0;
-        const isDirectionValid = passStart && passEnd && pickupInfo && dropInfo && 
-          (pickupInfo.minIndex < dropInfo.minIndex || 
-          (pickupInfo.minIndex === dropInfo.minIndex && pickupInfo.minProj.t <= dropInfo.minProj.t));
-
-        let pickupDetourMeters = 0;
-        let dropDetourMeters = 0;
-
-        if (passStart) {
-          const pDetour = await calculateRoadDetourDistance(passStart, points);
-          pickupDetourMeters = pDetour.detourMeters;
-        }
-
-        if (passEnd) {
-          const dDetour = await calculateRoadDetourDistance(passEnd, points);
-          dropDetourMeters = dDetour.detourMeters;
-        }
-
-        if (isDirectionValid && pickupInfo && dropInfo && passStart && passEnd) {
-          if (pickupDetourMeters === 0 && dropDetourMeters === 0) {
-            const actualRoadDist = await fetchRoadDistance(passStart, passEnd);
-            if (typeof actualRoadDist === "number" && actualRoadDist > 0) {
-              segmentDistanceMeters = actualRoadDist;
-            } else {
-              const distKm = getRouteSegmentDistance(
-                points, 
-                pickupInfo.minIndex, 
-                pickupInfo.minProj, 
-                dropInfo.minIndex, 
-                dropInfo.minProj
-              );
-              segmentDistanceMeters = distKm * 1000;
-            }
-          } else {
-            const distKm = getRouteSegmentDistance(
-              points, 
-              pickupInfo.minIndex, 
-              pickupInfo.minProj, 
-              dropInfo.minIndex, 
-              dropInfo.minProj
-            );
-            segmentDistanceMeters = distKm * 1000;
-          }
-        }
-
-        const fare = calculateFare({
-          rideType: ride.rideType,
-          routeDistanceMeters: segmentDistanceMeters,
-          pickupDetourMeters,
-          dropDetourMeters,
-        });
-
-        matchedRides.push({
-          ...ride,
-          dynamicPrice: fare.passengerTotal,
-          hasFemaleCoPassengerPref
-        });
-      }
+    if (eligibility.eligible) {
+      matchedRides.push({
+        ...ride,
+        dynamicPrice: eligibility.fare ?? ride.price,
+        hasFemaleCoPassengerPref,
+      });
     }
   }
 
@@ -259,8 +138,13 @@ export default async function SearchResults({
                 <CardHeader>
                   <div className="flex justify-between items-start">
                     <div>
-                      <CardTitle className="text-base leading-snug group-hover:text-primary transition-colors">
-                        {ride.origin} → {ride.destination}
+                      <CardTitle className="text-base leading-snug group-hover:text-primary transition-colors flex items-center justify-between gap-2">
+                        <span>{ride.origin} → {ride.destination}</span>
+                        {ride.status === "ACTIVE" && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 shrink-0">
+                            🚗 Active • En Route
+                          </span>
+                        )}
                       </CardTitle>
                       <CardDescription className="mt-1">
                         {new Date(ride.departure).toLocaleString(undefined, {
@@ -286,7 +170,7 @@ export default async function SearchResults({
                       )}
                     </p>
                     <p><span className="font-medium text-foreground">{ride.seats} seats available</span></p>
-                    <p className="font-semibold text-foreground">Ride Fare: ₹{ride.dynamicPrice.toFixed(2)}</p>
+                    <p className="font-semibold text-foreground">Estimated Segment Fare: ₹{ride.dynamicPrice.toFixed(2)}</p>
                     {ride.hasFemaleCoPassengerPref && (
                       <div className="pt-1">
                         <span className="inline-block text-[11px] font-semibold px-2 py-0.5 rounded bg-pink-100 dark:bg-pink-950 text-pink-700 dark:text-pink-300 border border-pink-200 dark:border-pink-900">

@@ -42,7 +42,8 @@ export default async function Dashboard() {
               gender: true,
               studentVerificationStatus: true,
             } 
-          } 
+          },
+          payment: true,
         }
       }
     }
@@ -53,6 +54,7 @@ export default async function Dashboard() {
   const myBookings = isPassengerRole ? await prisma.booking.findMany({
     where: { userId: user.id },
     include: {
+      payment: true,
       ride: {
         include: { 
           driver: { 
@@ -89,6 +91,7 @@ export default async function Dashboard() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-10">
+      <DriverRequestSync />
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 border-b pb-6">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">
@@ -185,6 +188,22 @@ export default async function Dashboard() {
                           <span className="font-semibold text-primary">
                             {booking.fare > 0 ? `₹${booking.fare.toFixed(2)}` : "₹0.00"}
                           </span>
+                          {booking.previousFare && booking.previousFare > 0 && Math.abs(booking.fare - booking.previousFare) > 0.01 ? (
+                            booking.fare < booking.previousFare ? (
+                              <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                                Reduced from ₹{booking.previousFare.toFixed(2)} (Saved ₹{(booking.previousFare - booking.fare).toFixed(2)})
+                              </p>
+                            ) : (
+                              <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                                Adjusted from ₹{booking.previousFare.toFixed(2)}
+                              </p>
+                            )
+                          ) : null}
+                          {booking.fareChangeReason ? (
+                            <p className="text-[9px] text-muted-foreground italic max-w-[200px] truncate" title={booking.fareChangeReason}>
+                              {booking.fareChangeReason}
+                            </p>
+                          ) : null}
                           {booking.detourFare && booking.detourFare > 0 ? (
                             <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
                               Incl. ₹{booking.detourFare.toFixed(2)} detour ({((booking.detourDistance || 0) / 1000).toFixed(2)} km)
@@ -192,6 +211,50 @@ export default async function Dashboard() {
                           ) : null}
                         </div>
                       </div>
+                      {(() => {
+                        const pPaid = booking.payment?.amountPaid ?? (booking.payment?.status === "SUCCEEDED" ? booking.payment?.amount : 0);
+                        const pBal = booking.payment?.outstandingBalance ?? (booking.payment?.status === "SUCCEEDED" ? 0 : booking.fare);
+                        const isFullyPaid = pBal === 0 && pPaid > 0;
+                        const isPartiallyPaid = pPaid > 0 && pBal > 0;
+                        const isOverpaid = pPaid > booking.fare;
+                        const refundCredit = isOverpaid ? Math.round((pPaid - booking.fare) * 100) / 100 : (booking.payment?.refundAmount ?? 0);
+
+                        return (
+                          <div className="flex items-center justify-between pt-1 border-t">
+                            <span className="text-xs font-medium text-muted-foreground">Payment Status:</span>
+                            <div className="flex flex-col items-end gap-1">
+                              <Badge 
+                                className={`text-[10px] font-semibold ${
+                                  isFullyPaid 
+                                    ? "bg-emerald-600 text-white hover:bg-emerald-600" 
+                                    : isPartiallyPaid 
+                                    ? "bg-amber-600 text-white hover:bg-amber-600"
+                                    : booking.payment?.status === "PROCESSING"
+                                    ? "bg-sky-600 text-white"
+                                    : booking.payment?.status === "FAILED"
+                                    ? "bg-rose-600 text-white"
+                                    : booking.ride.status === "COMPLETED"
+                                    ? "bg-rose-600 text-white animate-pulse"
+                                    : "bg-muted text-muted-foreground"
+                                }`}
+                              >
+                                {isFullyPaid 
+                                  ? `✓ PAID (₹${pPaid.toFixed(2)})` 
+                                  : isPartiallyPaid 
+                                  ? `PARTIAL (Paid ₹${pPaid.toFixed(0)} / Due ₹${pBal.toFixed(0)})` 
+                                  : booking.ride.status === "COMPLETED"
+                                  ? `DUE: ₹${pBal.toFixed(2)}`
+                                  : `DUE AT DEST (₹${pBal.toFixed(2)})`}
+                              </Badge>
+                              {refundCredit > 0 && (
+                                <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                  Refund Credit: ₹${refundCredit.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <div className="flex items-center justify-between pt-1 border-t">
                         <span className="text-xs font-medium text-muted-foreground">Seat Sharing Preference:</span>
                         <Badge variant="outline" className="text-[10px] bg-background">
@@ -239,15 +302,44 @@ export default async function Dashboard() {
                       {new Date(booking.ride.departure).toLocaleDateString()}
                     </CardDescription>
                   </CardHeader>
-                  <CardContent className="p-4 pt-1 flex justify-between items-center text-xs">
-                    <span className="text-muted-foreground">Driver: {booking.ride.driver.name}</span>
-                    {booking.ride.status === "COMPLETED" ? (
-                      <Link href={`/rides/${booking.ride.id}`} className="text-amber-600 dark:text-amber-400 font-semibold hover:underline">
-                        ★ Rate Driver →
-                      </Link>
-                    ) : (
-                      <span className="font-medium">₹{booking.fare.toFixed(2)}</span>
-                    )}
+                  <CardContent className="p-4 pt-1 flex flex-col gap-2 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">Driver: {booking.ride.driver.name}</span>
+                      <span className="font-semibold text-foreground">₹{booking.fare.toFixed(2)}</span>
+                    </div>
+                    {(() => {
+                      const pPaid = booking.payment?.amountPaid ?? (booking.payment?.status === "SUCCEEDED" ? booking.payment?.amount : 0);
+                      const pBal = booking.payment?.outstandingBalance ?? (booking.payment?.status === "SUCCEEDED" ? 0 : booking.fare);
+                      const isDue = pBal > 0 && booking.status === "CONFIRMED";
+
+                      if (booking.ride.status === "COMPLETED" && isDue) {
+                        return (
+                          <div className="flex items-center justify-between pt-1 border-t">
+                            <Badge className="bg-rose-600 text-white font-bold text-[10px] animate-pulse">
+                              Payment Due: ₹{pBal.toFixed(2)}
+                            </Badge>
+                            <Link href={`/rides/${booking.ride.id}`} className="text-rose-600 font-bold hover:underline text-[11px]">
+                              Pay Final Fare →
+                            </Link>
+                          </div>
+                        );
+                      }
+
+                      if (booking.ride.status === "COMPLETED") {
+                        return (
+                          <div className="flex items-center justify-between pt-1 border-t">
+                            <Badge className="bg-emerald-600 text-white text-[10px]">
+                              {pPaid > 0 ? `✓ Paid (₹${pPaid.toFixed(2)})` : "✓ Paid in Full"}
+                            </Badge>
+                            <Link href={`/rides/${booking.ride.id}`} className="text-amber-600 dark:text-amber-400 font-semibold hover:underline text-[11px]">
+                              ★ Rate Driver →
+                            </Link>
+                          </div>
+                        );
+                      }
+
+                      return null;
+                    })()}
                   </CardContent>
                 </Card>
               ))}
@@ -343,15 +435,48 @@ export default async function Dashboard() {
                             <li key={booking.id} className="text-xs p-2 rounded bg-background border space-y-1.5">
                               <div className="flex items-center justify-between">
                                 <span className="font-semibold text-foreground">{booking.user.name}</span>
-                                <Badge 
-                                  variant={booking.status === "CONFIRMED" ? "default" : booking.status === "PENDING" ? "outline" : "secondary"} 
-                                  className="text-[9px] px-1.5 py-0"
-                                >
-                                  {booking.status}
-                                </Badge>
+                                <div className="flex items-center gap-1.5">
+                                  {(() => {
+                                    const pPaid = booking.payment?.amountPaid ?? (booking.payment?.status === "SUCCEEDED" ? booking.payment?.amount : 0);
+                                    const pBal = booking.payment?.outstandingBalance ?? (booking.payment?.status === "SUCCEEDED" ? 0 : booking.fare);
+                                    const isPaid = pBal === 0 && pPaid > 0;
+                                    const isPartial = pPaid > 0 && pBal > 0;
+                                    
+                                    if (booking.status !== "CONFIRMED") return null;
+
+                                    return (
+                                      <Badge 
+                                        className={`text-[9px] px-1.5 py-0 ${
+                                          isPaid 
+                                            ? "bg-emerald-600 text-white" 
+                                            : isPartial 
+                                            ? "bg-amber-600 text-white" 
+                                            : ride.status === "COMPLETED"
+                                            ? "bg-rose-600 text-white"
+                                            : "bg-muted text-muted-foreground"
+                                        }`}
+                                      >
+                                        {isPaid ? "✓ Paid" : isPartial ? `Paid ₹${pPaid.toFixed(0)}` : `Due ₹${pBal.toFixed(0)}`}
+                                      </Badge>
+                                    );
+                                  })()}
+                                  <Badge 
+                                    variant={booking.status === "CONFIRMED" ? "default" : booking.status === "PENDING" ? "outline" : "secondary"} 
+                                    className="text-[9px] px-1.5 py-0"
+                                  >
+                                    {booking.status}
+                                  </Badge>
+                                </div>
                               </div>
                               <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                                <span>Prefers: {booking.preferredPassengerGender === "FEMALE" ? "♀ Female Co-passengers" : "○ No Preference"}</span>
+                                <div>
+                                  <span>Fare: <strong className="text-foreground">₹{booking.fare.toFixed(2)}</strong></span>
+                                  {booking.previousFare && booking.previousFare > 0 && Math.abs(booking.fare - booking.previousFare) > 0.01 && booking.fare < booking.previousFare ? (
+                                    <span className="ml-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                      (Saved ₹{(booking.previousFare - booking.fare).toFixed(2)})
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <ManageBooking bookingId={booking.id} status={booking.status} />
                               </div>
                             </li>

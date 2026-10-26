@@ -18,6 +18,7 @@ import { getBidirectionalBlockedUserIds, getBlockRelationship } from "@/lib/bloc
 import ReportUserModal from "@/components/ReportUserModal";
 import BlockUserModal from "@/components/BlockUserModal";
 import ShareTripModal from "@/components/ShareTripModal";
+import PassengerTripPaymentCard from "@/components/PassengerTripPaymentCard";
 
 export default async function RideDetails({ 
   params,
@@ -27,7 +28,7 @@ export default async function RideDetails({
   searchParams?: { origin?: string; destination?: string; fare?: string }
 }) {
   const session = await getServerSession(authOptions);
-  const user = session?.user as { id?: string } | undefined;
+  const user = session?.user as { id?: string; name?: string; email?: string } | undefined;
 
   const dbUser = user?.id ? await prisma.user.findUnique({
     where: { id: user.id },
@@ -40,7 +41,8 @@ export default async function RideDetails({
       driver: { select: { id: true, name: true, email: true, phoneNumber: true, studentVerificationStatus: true, driverVerificationStatus: true } },
       bookings: {
         include: {
-          user: { select: { id: true, name: true, phoneNumber: true } }
+          user: { select: { id: true, name: true, phoneNumber: true } },
+          payment: true,
         }
       },
     }
@@ -202,7 +204,20 @@ export default async function RideDetails({
             </div>
             <div className="text-right flex flex-col items-end gap-2">
               <div>
-                <span className="text-3xl font-bold text-primary">₹{displayFare.toFixed(2)}</span>
+                <div>
+                  <span className="text-3xl font-bold text-primary">₹{displayFare.toFixed(2)}</span>
+                  {myBooking && myBooking.previousFare && myBooking.previousFare > 0 && Math.abs(myBooking.fare - myBooking.previousFare) > 0.01 && (
+                    myBooking.fare < myBooking.previousFare ? (
+                      <Badge className="ml-2 bg-emerald-600 hover:bg-emerald-600 text-white text-[11px] font-semibold">
+                        Saved ₹{(myBooking.previousFare - myBooking.fare).toFixed(2)}
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="ml-2 text-amber-600 border-amber-300 text-[11px]">
+                        Adjusted
+                      </Badge>
+                    )
+                  )}
+                </div>
                 <p className="text-sm text-muted-foreground font-medium">
                   {myBooking ? "Your Booking Fare" : "Total Ride Fare"}
                 </p>
@@ -321,37 +336,80 @@ export default async function RideDetails({
                     <div className="space-y-1.5">
                       {ride.bookings
                         .filter((b) => b.status === "CONFIRMED" || b.status === "PENDING")
-                        .map((b) => (
-                          <div key={b.id} className="flex flex-col gap-1.5 text-xs bg-background p-2 rounded-lg border">
-                            <div className="flex items-center justify-between">
-                              <span className="font-medium text-foreground">{b.user.name}</span>
-                              <Badge variant="outline" className="text-[10px] px-1 py-0">
-                                {b.status}
-                              </Badge>
-                            </div>
-                            {b.status === "CONFIRMED" ? (
-                              <div className="text-[11px] font-mono text-muted-foreground bg-muted/40 px-2 py-1 rounded">
-                                {b.user.phoneNumber ? `📞 ${b.user.phoneNumber}` : "No phone provided"}
+                        .map((b) => {
+                          const pPaid = b.payment?.amountPaid ?? (b.payment?.status === "SUCCEEDED" ? b.payment?.amount : 0);
+                          const pBal = b.payment?.outstandingBalance ?? (b.payment?.status === "SUCCEEDED" ? 0 : b.fare);
+                          const isFullyPaid = pBal === 0 && pPaid > 0;
+                          const isPartiallyPaid = pPaid > 0 && pBal > 0;
+
+                          return (
+                            <div key={b.id} className="flex flex-col gap-1.5 text-xs bg-background p-2.5 rounded-lg border">
+                              <div className="flex items-center justify-between">
+                                <span className="font-semibold text-foreground">{b.user.name}</span>
+                                <div className="flex items-center gap-1">
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                    {b.status}
+                                  </Badge>
+                                  {b.status === "CONFIRMED" && (
+                                    <Badge 
+                                      className={`text-[9px] px-1.5 py-0 ${
+                                        isFullyPaid 
+                                          ? "bg-emerald-600 hover:bg-emerald-600 text-white font-semibold" 
+                                          : isPartiallyPaid 
+                                          ? "bg-amber-600 hover:bg-amber-600 text-white font-semibold" 
+                                          : ride.status === "COMPLETED" 
+                                          ? "bg-rose-600 hover:bg-rose-600 text-white font-bold animate-pulse" 
+                                          : "bg-muted text-muted-foreground"
+                                      }`}
+                                    >
+                                      {isFullyPaid 
+                                        ? "✓ Paid" 
+                                        : isPartiallyPaid 
+                                        ? `Partially Paid (Bal: ₹${pBal.toFixed(0)})` 
+                                        : ride.status === "COMPLETED"
+                                        ? "Payment Due"
+                                        : "Due At Dest"}
+                                    </Badge>
+                                  )}
+                                </div>
                               </div>
-                            ) : (
-                              <div className="text-[10px] text-muted-foreground italic">
-                                Phone visible once confirmed
+                              <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5">
+                                <div>
+                                  <span>Fare: <strong className="text-foreground">₹{b.fare.toFixed(2)}</strong></span>
+                                  {b.previousFare && b.previousFare > 0 && Math.abs(b.fare - b.previousFare) > 0.01 && b.fare < b.previousFare && (
+                                    <span className="ml-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                      (Saved ₹{(b.previousFare - b.fare).toFixed(2)})
+                                    </span>
+                                  )}
+                                </div>
+                                {b.status === "CONFIRMED" && (
+                                  <span>Paid: <strong className={pPaid > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>₹{pPaid.toFixed(2)}</strong></span>
+                                )}
                               </div>
-                            )}
-                            <div className="flex items-center gap-1.5 pt-1">
-                              <ReportUserModal
-                                targetUserId={b.user.id}
-                                targetUserName={b.user.name}
-                                rideId={ride.id}
-                              />
-                              <BlockUserModal
-                                targetUserId={b.user.id}
-                                targetUserName={b.user.name}
-                                initialIsBlocked={blockedUserIds.includes(b.user.id)}
-                              />
+                              {b.status === "CONFIRMED" ? (
+                                <div className="text-[11px] font-mono text-muted-foreground bg-muted/40 px-2 py-1 rounded">
+                                  {b.user.phoneNumber ? `📞 ${b.user.phoneNumber}` : "No phone provided"}
+                                </div>
+                              ) : (
+                                <div className="text-[10px] text-muted-foreground italic">
+                                  Phone visible once confirmed
+                                </div>
+                              )}
+                              <div className="flex items-center gap-1.5 pt-1">
+                                <ReportUserModal
+                                  targetUserId={b.user.id}
+                                  targetUserName={b.user.name}
+                                  rideId={ride.id}
+                                />
+                                <BlockUserModal
+                                  targetUserId={b.user.id}
+                                  targetUserName={b.user.name}
+                                  initialIsBlocked={blockedUserIds.includes(b.user.id)}
+                                />
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                     </div>
                   </div>
                 )}
@@ -387,15 +445,32 @@ export default async function RideDetails({
 
           <div className="pt-4 border-t flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
             <div className="flex-1">
-              <BookingButton 
-                 rideId={ride.id} 
-                 disabledReason={disabledReason} 
-                 fare={displayFare} 
-                 passengerOrigin={displayOrigin} 
-                 passengerDestination={displayDestination} 
-                 userGender={dbUser?.gender}
-                 userPhone={dbUser?.phoneNumber}
-              />
+              {myBooking ? (
+                <PassengerTripPaymentCard
+                  rideId={ride.id}
+                  rideStatus={ride.status}
+                  bookingId={myBooking.id}
+                  fare={myBooking.fare}
+                  previousFare={myBooking.previousFare}
+                  fareVersion={myBooking.fareVersion}
+                  fareUpdatedAt={myBooking.fareUpdatedAt}
+                  fareChangeReason={myBooking.fareChangeReason}
+                  payment={myBooking.payment}
+                  userName={user?.name || undefined}
+                  userEmail={user?.email || undefined}
+                  userPhone={dbUser?.phoneNumber || undefined}
+                />
+              ) : (
+                <BookingButton 
+                   rideId={ride.id} 
+                   disabledReason={disabledReason} 
+                   fare={displayFare} 
+                   passengerOrigin={displayOrigin} 
+                   passengerDestination={displayDestination} 
+                   userGender={dbUser?.gender}
+                   userPhone={dbUser?.phoneNumber}
+                />
+              )}
             </div>
             {canSeeChat && user?.id && (
               <div className="flex items-center gap-2">

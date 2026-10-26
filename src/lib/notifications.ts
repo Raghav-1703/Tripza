@@ -15,6 +15,7 @@ export interface EmergencyNotificationPayload {
   alertCreatedAt: Date;
   latitude?: number | null;
   longitude?: number | null;
+  accuracy?: number | null;
 }
 
 export interface SendEmailResult {
@@ -58,14 +59,32 @@ export async function sendEmergencyEmail(payload: EmergencyNotificationPayload):
   const baseUrl = origin || process.env.NEXTAUTH_URL || "http://localhost:3000";
   const trackingUrl = `${baseUrl}/rides/${payload.rideId}`;
 
-  const locationText = (payload.latitude != null && payload.longitude != null && !isNaN(payload.latitude) && !isNaN(payload.longitude))
-    ? `Latitude: ${payload.latitude}, Longitude: ${payload.longitude}\nGoogle Maps: https://maps.google.com/?q=${payload.latitude},${payload.longitude}\nLive Tracking Link: ${trackingUrl}`
-    : `Location: Unavailable\nLive Tracking Link: ${trackingUrl}`;
+  const hasValidCoordinates = (
+    payload.latitude != null &&
+    payload.longitude != null &&
+    !isNaN(payload.latitude) &&
+    !isNaN(payload.longitude) &&
+    payload.latitude >= -90 &&
+    payload.latitude <= 90 &&
+    payload.longitude >= -180 &&
+    payload.longitude <= 180
+  );
+
+  const accuracyNote = (payload.accuracy != null && !isNaN(payload.accuracy))
+    ? ` (Accuracy: ±${Math.round(payload.accuracy)}m)`
+    : "";
+
+  const locationText = hasValidCoordinates
+    ? `Live Coordinates: ${payload.latitude!.toFixed(6)}, ${payload.longitude!.toFixed(6)}${accuracyNote}
+Google Maps Link: https://maps.google.com/?q=${payload.latitude},${payload.longitude}
+Live Trip Tracking: ${trackingUrl}`
+    : `Live Coordinates: Unavailable (Device GPS was not accessible when SOS was triggered)
+Live Trip Tracking: ${trackingUrl}`;
 
   const subject = `🚨 TPool Emergency Alert - ${payload.passengerName}`;
   const textContent = `TPool Emergency Alert
 
-${payload.passengerName} has activated an SOS during a TPool ride.
+${payload.passengerName} has activated an emergency SOS alert during a TPool ride.
 
 Ride:
 ${payload.origin} → ${payload.destination}
@@ -76,13 +95,13 @@ ${payload.driverName}
 Departure:
 ${new Date(payload.departure).toLocaleString()}
 
-SOS activated:
+SOS Activated:
 ${new Date(payload.alertCreatedAt).toLocaleString()}
 
 Current GPS Location:
 ${locationText}
 
-Please contact the passenger or open the Live Tracking link above immediately.
+Please contact the passenger or open the links above immediately.
 
 This is an emergency notification from TPool.`;
 
@@ -90,7 +109,7 @@ This is an emergency notification from TPool.`;
 To: ${recipientEmail}
 From: ${emailFrom}
 Subject: ${subject}
-Location Status: ${payload.latitude != null ? "Available" : "Unavailable"}`);
+Location Status: ${hasValidCoordinates ? `Available (Lat: ${payload.latitude}, Lon: ${payload.longitude})` : "Unavailable"}`);
 
   if (!smtpHost || !smtpUser || !smtpPass) {
     console.warn("[Emergency Alert] SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) not configured in environment variables. Email notification cannot be sent.");
@@ -157,8 +176,11 @@ export async function sendEmergencySms(payload: EmergencyNotificationPayload): P
   const smsApiKey = process.env.SMS_PROVIDER_API_KEY;
   const smsFrom = process.env.SMS_PROVIDER_FROM;
 
+  const hasCoords = payload.latitude != null && payload.longitude != null;
+  const mapLink = hasCoords ? `https://maps.google.com/?q=${payload.latitude},${payload.longitude}` : "GPS Unavailable";
+
   if (!smsApiKey || !smsFrom) {
-    console.log(`[EMERGENCY SMS LOG] Prepared for ${payload.passengerName}. SMS_PROVIDER_API_KEY / SMS_PROVIDER_FROM not set.`);
+    console.log(`[EMERGENCY SMS LOG] Prepared for ${payload.passengerName}. Location: ${mapLink}. SMS_PROVIDER_API_KEY / SMS_PROVIDER_FROM not set.`);
     return {
       implemented: true,
       configured: false,

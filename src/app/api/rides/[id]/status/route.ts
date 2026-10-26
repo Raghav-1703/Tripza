@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { computeBookingPaymentSummary } from "@/lib/payment";
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -14,9 +15,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       where: { id: params.id },
       select: {
         id: true,
+        driverId: true,
         status: true,
         distance: true,
         price: true,
+        rideType: true,
         routeGeometry: true,
         routeUpdatedAt: true,
         bookings: {
@@ -25,6 +28,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             id: true,
             userId: true,
             fare: true,
+            previousFare: true,
+            fareVersion: true,
+            fareUpdatedAt: true,
+            fareChangeReason: true,
+            status: true,
             pickupLocation: true,
             pickupLat: true,
             pickupLon: true,
@@ -35,7 +43,20 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             detourFare: true,
             detourDistance: true,
             fareBreakdown: true,
-            user: { select: { name: true } },
+            user: { select: { name: true, phoneNumber: true } },
+            payment: {
+              select: {
+                id: true,
+                status: true,
+                amount: true,
+                amountPaid: true,
+                finalFare: true,
+                outstandingBalance: true,
+                refundAmount: true,
+                paymentMethod: true,
+                providerOrderId: true,
+              },
+            },
           },
         },
       },
@@ -90,6 +111,45 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       } catch {}
     }
 
+    // Build driver view of all passenger payment statuses
+    const passengerPayments = ride.bookings.map((b) => {
+      const summary = computeBookingPaymentSummary({
+        id: b.id,
+        fare: b.fare,
+        status: b.status,
+        payment: b.payment,
+        ride: { status: ride.status, distance: ride.distance, rideType: ride.rideType },
+      });
+      return {
+        bookingId: b.id,
+        userId: b.userId,
+        passengerName: b.user.name,
+        fare: b.fare,
+        previousFare: b.previousFare,
+        fareVersion: b.fareVersion,
+        fareUpdatedAt: b.fareUpdatedAt,
+        fareChangeReason: b.fareChangeReason,
+        amountPaid: summary.amountPaid,
+        outstandingBalance: summary.outstandingBalance,
+        refundDue: summary.refundDue,
+        refundAmount: b.payment?.refundAmount ?? 0,
+        status: summary.status,
+        statusLabel: summary.statusLabel,
+        paymentMethod: summary.paymentMethod,
+        isFullyPaid: summary.isFullyPaid,
+      };
+    });
+
+    const userPayment = userBooking
+      ? computeBookingPaymentSummary({
+          id: userBooking.id,
+          fare: userBooking.fare,
+          status: userBooking.status,
+          payment: userBooking.payment,
+          ride: { status: ride.status, distance: ride.distance, rideType: ride.rideType },
+        })
+      : null;
+
     return NextResponse.json(
       {
         status: ride.status,
@@ -97,10 +157,16 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         distance: ride.distance,
         price: ride.price,
         userFare: userBooking?.fare ?? null,
+        userPreviousFare: userBooking?.previousFare ?? null,
+        userFareVersion: userBooking?.fareVersion ?? 1,
+        userFareUpdatedAt: userBooking?.fareUpdatedAt ?? null,
+        userFareChangeReason: userBooking?.fareChangeReason ?? null,
         userMainFare: userBooking?.mainFare ?? null,
         userDetourFare: userBooking?.detourFare ?? null,
         userDetourDistance: userBooking?.detourDistance ?? null,
         userFareBreakdown: parsedBreakdown,
+        userPayment,
+        passengerPayments,
         confirmedCount: ride.bookings.length,
         routeGeometry: ride.routeGeometry,
         stops: confirmedStops,

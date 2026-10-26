@@ -67,6 +67,24 @@ enum EmergencyAlertStatus {
   CANCELLED
 }
 
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  PARTIALLY_PAID
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum PaymentMethod {
+  UPI
+  CARD
+  NETBANKING
+  WALLET
+}
+
 model User {
   id                        String             @id @default(cuid())
   name                      String
@@ -97,6 +115,7 @@ model User {
   ratingsReceived           Rating[]           @relation("RatingsReceived")
   trustedContacts           TrustedContact[]   @relation("UserContacts")
   sharedTokens              TripShareToken[]   @relation("SharedTokens")
+  payments                  Payment[]          @relation("UserPayments")
 }
 
 model Ride {
@@ -132,6 +151,7 @@ model Ride {
   emergencyAlerts EmergencyAlert[]
   ratings         Rating[]
   shareTokens     TripShareToken[]
+  payments        Payment[]
 }
 
 model Booking {
@@ -144,6 +164,10 @@ model Booking {
   detourFare              Float?                    @default(0)
   detourDistance          Float?                    @default(0)
   fareBreakdown           String?
+  previousFare            Float?                    @default(0)
+  fareVersion             Int                       @default(1)
+  fareUpdatedAt           DateTime?                 @default(now())
+  fareChangeReason        String?
   status                  String                    @default("PENDING") // PENDING, CONFIRMED, CANCELLED, REJECTED
   preferredPassengerGender PassengerGenderPreference @default(ANY)
   pickupLocation          String?
@@ -159,6 +183,8 @@ model Booking {
   emergencyAlerts         EmergencyAlert[]
   ratings                 Rating[]
   shareTokens             TripShareToken[]
+  payment                 Payment?
+  paymentAudits           PaymentAudit[]
 }
 
 model EmergencyAlert {
@@ -290,4 +316,75 @@ model TripShareToken {
   @@index([rideId])
   @@index([userId])
 }
+
+model Payment {
+  id                 String        @id @default(cuid())
+  bookingId          String        @unique
+  rideId             String
+  userId             String
+  amount             Float
+  amountSubunits     Int
+  amountPaid         Float?        @default(0)
+  finalFare          Float?
+  outstandingBalance Float?        @default(0)
+  currency           String        @default("INR")
+  status             PaymentStatus @default(PENDING)
+  provider           String        @default("RAZORPAY")
+  providerOrderId    String        @unique
+  providerPaymentId  String?       @unique
+  providerSignature  String?
+  paymentMethod      PaymentMethod?
+  idempotencyKey     String        @unique
+  refundId           String?
+  refundAmount       Float?        @default(0)
+  failureReason      String?
+  metadata           String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  booking            Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  ride               Ride          @relation(fields: [rideId], references: [id], onDelete: Cascade)
+  user               User          @relation("UserPayments", fields: [userId], references: [id], onDelete: Cascade)
+  audits             PaymentAudit[]
+
+  @@index([userId])
+  @@index([rideId])
+  @@index([providerOrderId])
+  @@index([status])
+}
+
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  eventId     String    @unique
+  provider    String    @default("RAZORPAY")
+  eventType   String
+  payload     String
+  processed   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
+
+  @@index([eventId])
+}
+
+model PaymentAudit {
+  id           String        @id @default(cuid())
+  paymentId    String
+  bookingId    String
+  action       String        // e.g. CREATED, CAPTURED, RECONCILED, REFUND_REQUESTED, REFUNDED, FAILED
+  fromStatus   PaymentStatus?
+  toStatus     PaymentStatus
+  amount       Float?
+  reason       String?
+  source       String        // e.g. "CLIENT_CALLBACK", "WEBHOOK", "RECONCILIATION_CRON", "ADMIN_ACTION"
+  metadata     String?       // JSON string for external IDs & debug details
+  createdAt    DateTime      @default(now())
+
+  payment      Payment       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  booking      Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@index([bookingId])
+  @@index([action])
+}
+
 

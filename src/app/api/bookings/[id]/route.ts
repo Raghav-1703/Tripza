@@ -68,6 +68,21 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
             where: { id: booking.rideId },
             data: { seats: { increment: 1 } }
           });
+
+          // Concurrency & Refund safety: If booking was paid, transition payment to REFUND_PENDING
+          const existingPayment = await tx.payment.findUnique({
+            where: { bookingId: booking.id }
+          });
+          if (existingPayment && existingPayment.status === "SUCCEEDED") {
+            await tx.payment.update({
+              where: { id: existingPayment.id },
+              data: {
+                status: "REFUND_PENDING",
+                failureReason: "Driver rejected booking after payment"
+              }
+            });
+          }
+
           return b;
         });
 
@@ -98,6 +113,21 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
           where: { id: booking.rideId },
           data: { seats: { increment: 1 } }
         });
+
+        // Concurrency & Refund safety: If booking was paid, transition payment to REFUND_PENDING
+        const existingPayment = await tx.payment.findUnique({
+          where: { bookingId: booking.id }
+        });
+        if (existingPayment && existingPayment.status === "SUCCEEDED") {
+          await tx.payment.update({
+            where: { id: existingPayment.id },
+            data: {
+              status: "REFUND_PENDING",
+              failureReason: "Passenger cancelled booking after payment"
+            }
+          });
+        }
+
         return b;
       });
 

@@ -130,6 +130,7 @@ export async function checkPassengerEligibility({
   driverDestCoords,
   rideType,
   existingRouteGeometry,
+  maxDetourKm,
 }: {
   rideId?: string;
   passengerOrigin: string;
@@ -140,11 +141,17 @@ export async function checkPassengerEligibility({
   driverDestCoords?: { lat: number; lon: number } | null;
   rideType?: string;
   existingRouteGeometry?: [number, number][];
+  maxDetourKm?: number;
 }) {
   let driverStart = driverOriginCoords || null;
   let driverEnd = driverDestCoords || null;
   let effectiveRideType = rideType || "Personal Cab";
   let storedRouteGeometry = existingRouteGeometry || null;
+  let fetchedRide: {
+    status?: string;
+    currentLat?: number | null;
+    currentLon?: number | null;
+  } | null = null;
 
   if (rideId) {
     const ride = await prisma.ride.findUnique({
@@ -162,12 +169,17 @@ export async function checkPassengerEligibility({
         baseDistance: true,
         baseRouteGeometry: true,
         routeGeometry: true,
+        status: true,
+        currentLat: true,
+        currentLon: true,
       },
     });
 
     if (!ride) {
       return { eligible: false, reason: "Ride not found" };
     }
+
+    fetchedRide = ride;
 
     if (!driverStart) {
       driverStart = (ride.originLat !== null && ride.originLon !== null)
@@ -217,31 +229,35 @@ export async function checkPassengerEligibility({
   const pickupInfo = pointToRouteDistance(passStart.lat, passStart.lon, routePoints);
   const dropInfo = pointToRouteDistance(passEnd.lat, passEnd.lon, routePoints);
 
-  // Allowable limit: 2.0 km (testing buffer)
-  const maxDist = 2.0;
+  // Configurable detour limit: argument > env MAX_DETOUR_KM > default 2.0 km
+  const effectiveMaxDist = typeof maxDetourKm === "number" && maxDetourKm > 0
+    ? maxDetourKm
+    : (process.env.MAX_DETOUR_KM ? parseFloat(process.env.MAX_DETOUR_KM) : 2.0);
 
-  // Direction validation: pickup must occur before or at the same segment with t <= dropInfo.t
-  const isDirectionValid =
-    pickupInfo.minIndex < dropInfo.minIndex ||
-    (pickupInfo.minIndex === dropInfo.minIndex && pickupInfo.minProj.t <= dropInfo.minProj.t);
-
-  if (pickupInfo.minDist > maxDist) {
+  if (pickupInfo.minDist > effectiveMaxDist) {
     return {
       eligible: false,
-      reason: `Pickup point is ${(pickupInfo.minDist).toFixed(2)} km away from route (allowable limit is ${maxDist} km)`,
+      reason: `Pickup point is ${(pickupInfo.minDist).toFixed(2)} km away from route (allowable limit is ${effectiveMaxDist} km)`,
       passStart,
       passEnd,
     };
   }
 
-  if (dropInfo.minDist > maxDist) {
+  if (dropInfo.minDist > effectiveMaxDist) {
     return {
       eligible: false,
-      reason: `Drop-off point is ${(dropInfo.minDist).toFixed(2)} km away from route (allowable limit is ${maxDist} km)`,
+      reason: `Drop-off point is ${(dropInfo.minDist).toFixed(2)} km away from route (allowable limit is ${effectiveMaxDist} km)`,
       passStart,
       passEnd,
     };
   }
+
+  // Progress along route polyline: index + t (0 <= t <= 1)
+  const pickupProgress = pickupInfo.minIndex + pickupInfo.minProj.t;
+  const dropProgress = dropInfo.minIndex + dropInfo.minProj.t;
+
+  // Direction validation: pickup must occur strictly before drop along the route
+  const isDirectionValid = pickupProgress < dropProgress;
 
   if (!isDirectionValid) {
     return {
@@ -250,6 +266,28 @@ export async function checkPassengerEligibility({
       passStart,
       passEnd,
     };
+  }
+
+  // Active ride check: passenger cannot board behind a moving/active vehicle
+  if (
+    fetchedRide &&
+    fetchedRide.status === "ACTIVE" &&
+    typeof fetchedRide.currentLat === "number" &&
+    typeof fetchedRide.currentLon === "number" &&
+    fetchedRide.currentLat !== 0 &&
+    fetchedRide.currentLon !== 0
+  ) {
+    const driverLocInfo = pointToRouteDistance(fetchedRide.currentLat, fetchedRide.currentLon, routePoints);
+    const driverProgress = driverLocInfo.minIndex + driverLocInfo.minProj.t;
+    // Allow a small 0.005 buffer (~100m) for GPS noise near current stop
+    if (pickupProgress < driverProgress - 0.005) {
+      return {
+        eligible: false,
+        reason: "The vehicle has already passed this pickup location along its active route",
+        passStart,
+        passEnd,
+      };
+    }
   }
 
   // Calculate actual road detour for pickup and drop-off
@@ -306,15 +344,37 @@ export async function checkPassengerEligibility({
   };
 }
 
+// Mutex to serialize recalculations per ride, preventing race conditions from concurrent joins/exits
+const recalculationMutex = new Map<string, Promise<unknown>>();
+
 // Recalculates the driving route with Valhalla including all confirmed passenger pickup/drop-off detours,
 // and updates the fares of all affected confirmed passengers.
 export async function recalculateRideRouteAndFares(rideId: string) {
+  const previous = recalculationMutex.get(rideId) || Promise.resolve();
+  let release: () => void = () => {};
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  recalculationMutex.set(rideId, current);
+
+  try {
+    await previous;
+    return await executeRecalculateRideRouteAndFares(rideId);
+  } finally {
+    release();
+    if (recalculationMutex.get(rideId) === current) {
+      recalculationMutex.delete(rideId);
+    }
+  }
+}
+
+async function executeRecalculateRideRouteAndFares(rideId: string) {
   const ride = await prisma.ride.findUnique({
     where: { id: rideId },
     include: {
       bookings: {
         where: { status: "CONFIRMED" },
-        include: { user: { select: { name: true } } },
+        include: { user: { select: { name: true } }, payment: true },
       },
     },
   });
@@ -383,8 +443,21 @@ export async function recalculateRideRouteAndFares(rideId: string) {
       !isNaN(b.dropLon)
   );
 
-  // If no confirmed passengers with custom stops, revert to direct baseline route
-  if (confirmedWithStops.length === 0) {
+  const isEarlyExit = (b: (typeof ride.bookings)[0]) => {
+    if (!b.fareBreakdown) return false;
+    try {
+      const fb = JSON.parse(b.fareBreakdown);
+      return fb.earlyExit === true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Only active passengers who have NOT exited early participate in remaining route stops and dynamic detours
+  const activeConfirmedWithStops = confirmedWithStops.filter((b) => !isEarlyExit(b));
+
+  // If no active confirmed passengers with custom stops, revert to direct baseline route
+  if (activeConfirmedWithStops.length === 0) {
     await prisma.ride.update({
       where: { id: rideId },
       data: {
@@ -415,7 +488,7 @@ export async function recalculateRideRouteAndFares(rideId: string) {
 
   const passMetas: PassengerDetourMeta[] = [];
 
-  for (const b of confirmedWithStops) {
+  for (const b of activeConfirmedWithStops) {
     const pDetourInfo = await calculateRoadDetourDistance(
       { lat: b.pickupLat!, lon: b.pickupLon! },
       basePolyline
@@ -527,13 +600,41 @@ export async function recalculateRideRouteAndFares(rideId: string) {
       dropDetourMeters: meta.allocatedDropDetour,
     });
 
+    const bookedPassenger = activeConfirmedWithStops.find((x) => x.id === meta.bookingId);
+    const prevFare = bookedPassenger?.fare ?? 0;
+    const currentFareVersion = bookedPassenger?.fareVersion ?? 1;
+    const newFare = fareBreakdown.passengerTotal;
+    const fareDiff = Math.round((newFare - prevFare) * 100) / 100;
+
+    let newFareVersion = currentFareVersion;
+    let fareUpdatedAt = bookedPassenger?.fareUpdatedAt || new Date();
+    let fareChangeReason = bookedPassenger?.fareChangeReason || null;
+
+    if (prevFare > 0 && Math.abs(fareDiff) > 0.01) {
+      newFareVersion = currentFareVersion + 1;
+      fareUpdatedAt = new Date();
+      if (fareDiff < 0) {
+        if (meta.sharedPickupPassengersCount > 1 || meta.sharedDropPassengersCount > 1) {
+          fareChangeReason = `Shared detour with co-passenger (Saved ₹${Math.abs(fareDiff).toFixed(2)})`;
+        } else {
+          fareChangeReason = `Fare reduced by ₹${Math.abs(fareDiff).toFixed(2)}`;
+        }
+      } else {
+        fareChangeReason = `Route adjusted for co-passenger (+₹${fareDiff.toFixed(2)})`;
+      }
+    }
+
     await prisma.booking.update({
       where: { id: meta.bookingId },
       data: {
-        fare: fareBreakdown.passengerTotal,
+        previousFare: (prevFare > 0 && Math.abs(fareDiff) > 0.01) ? prevFare : (bookedPassenger?.previousFare ?? prevFare),
+        fare: newFare,
         mainFare: fareBreakdown.mainRouteFare,
         detourFare: fareBreakdown.pickupDetourFare + fareBreakdown.dropDetourFare,
         detourDistance: meta.allocatedPickupDetour + meta.allocatedDropDetour,
+        fareVersion: newFareVersion,
+        fareUpdatedAt,
+        fareChangeReason,
         fareBreakdown: JSON.stringify({
           ...fareBreakdown,
           sharedPickupCount: meta.sharedPickupPassengersCount,
@@ -543,6 +644,106 @@ export async function recalculateRideRouteAndFares(rideId: string) {
         }),
       },
     });
+
+    if (bookedPassenger?.payment) {
+      const payment = bookedPassenger.payment;
+      const currentPaid = (typeof payment.amountPaid === "number" && payment.amountPaid > 0)
+        ? payment.amountPaid
+        : (payment.status === "SUCCEEDED" ? payment.amount : 0);
+
+      if (currentPaid > 0) {
+        if (newFare > currentPaid) {
+          // Underpaid: passenger paid earlier, but fare increased
+          const newOutstanding = Math.max(0, Math.round((newFare - currentPaid) * 100) / 100);
+          await prisma.payment.update({
+            where: { id: payment.id },
+            data: {
+              finalFare: newFare,
+              outstandingBalance: newOutstanding,
+              status: "PARTIALLY_PAID",
+            },
+          });
+
+          await prisma.paymentAudit.create({
+            data: {
+              paymentId: payment.id,
+              bookingId: meta.bookingId,
+              action: "FARE_RECALCULATED_INCREASE",
+              fromStatus: payment.status,
+              toStatus: "PARTIALLY_PAID",
+              amount: newOutstanding,
+              reason: `Fare increased from ₹${prevFare.toFixed(2)} to ₹${newFare.toFixed(2)}; outstanding balance is ₹${newOutstanding.toFixed(2)}`,
+              source: "DYNAMIC_ROUTING_RECALCULATION",
+            },
+          });
+        } else if (newFare < currentPaid) {
+          // Overpaid: passenger paid earlier, but co-passenger joined and reduced detour!
+          const refundDiff = Math.max(0, Math.round((currentPaid - newFare) * 100) / 100);
+          const newRefundAmount = Math.round(((payment.refundAmount || 0) + refundDiff) * 100) / 100;
+          await prisma.payment.update({
+            where: { id: payment.id },
+            data: {
+              finalFare: newFare,
+              outstandingBalance: 0,
+              refundAmount: newRefundAmount,
+              status: "SUCCEEDED",
+            },
+          });
+
+          await prisma.paymentAudit.create({
+            data: {
+              paymentId: payment.id,
+              bookingId: meta.bookingId,
+              action: "FARE_RECALCULATED_DECREASE_REFUND_CREDIT",
+              fromStatus: payment.status,
+              toStatus: "SUCCEEDED",
+              amount: refundDiff,
+              reason: `Fare decreased from ₹${prevFare.toFixed(2)} to ₹${newFare.toFixed(2)}; credit/refund difference of ₹${refundDiff.toFixed(2)} due to co-passenger detour sharing`,
+              source: "DYNAMIC_ROUTING_RECALCULATION",
+              metadata: JSON.stringify({ previousFare: prevFare, newFare, refundCredit: refundDiff }),
+            },
+          });
+        } else {
+          // Exactly equal
+          await prisma.payment.update({
+            where: { id: payment.id },
+            data: {
+              finalFare: newFare,
+              outstandingBalance: 0,
+              status: "SUCCEEDED",
+            },
+          });
+        }
+      } else {
+        // Passenger has not paid yet
+        const newOutstanding = newFare;
+        const newSubunits = Math.round(newFare * 100);
+        await prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            amount: newFare,
+            amountSubunits: newSubunits,
+            finalFare: newFare,
+            outstandingBalance: newOutstanding,
+          },
+        });
+
+        if (prevFare > 0 && Math.abs(fareDiff) > 0.01) {
+          await prisma.paymentAudit.create({
+            data: {
+              paymentId: payment.id,
+              bookingId: meta.bookingId,
+              action: "FARE_RECALCULATED_UNPAID",
+              fromStatus: payment.status,
+              toStatus: payment.status,
+              amount: newFare,
+              reason: `Unpaid booking fare updated from ₹${prevFare.toFixed(2)} to ₹${newFare.toFixed(2)}`,
+              source: "DYNAMIC_ROUTING_RECALCULATION",
+            },
+          });
+        }
+      }
+    }
   }
 
   // 5. Build ordered stop points for Valhalla multi-stop route
@@ -559,7 +760,7 @@ export async function recalculateRideRouteAndFares(rideId: string) {
 
   const stops: StopItem[] = [];
 
-  for (const b of confirmedWithStops) {
+  for (const b of activeConfirmedWithStops) {
     const meta = passMetas.find((m) => m.bookingId === b.id)!;
     const pProgress = meta.pProj.minIndex + meta.pProj.t;
     const dProgress = Math.max(pProgress + 0.0001, meta.dProj.minIndex + meta.dProj.t);

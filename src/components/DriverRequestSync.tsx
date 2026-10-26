@@ -3,9 +3,17 @@
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
+interface DashboardSyncState {
+  count: number;
+  latestBookingTime: number;
+  totalConfirmedFares: number;
+  latestRouteTime: number;
+  passengerHash: string;
+}
+
 export default function DriverRequestSync() {
   const router = useRouter();
-  const lastStateRef = useRef<{ count: number; latestBookingTime: number } | null>(null);
+  const lastStateRef = useRef<DashboardSyncState | null>(null);
   const isFetchingRef = useRef(false);
 
   useEffect(() => {
@@ -20,16 +28,26 @@ export default function DriverRequestSync() {
         if (res.ok && isMounted) {
           const data = await res.json();
           if (lastStateRef.current !== null) {
-            if (
+            const hasDriverChanges =
               data.count !== lastStateRef.current.count ||
-              data.latestBookingTime !== lastStateRef.current.latestBookingTime
-            ) {
+              data.latestBookingTime !== lastStateRef.current.latestBookingTime ||
+              data.totalConfirmedFares !== lastStateRef.current.totalConfirmedFares ||
+              data.latestRouteTime !== lastStateRef.current.latestRouteTime;
+
+            const hasPassengerChanges =
+              data.passengerHash !== undefined &&
+              data.passengerHash !== lastStateRef.current.passengerHash;
+
+            if (hasDriverChanges || hasPassengerChanges) {
               router.refresh();
             }
           }
           lastStateRef.current = {
-            count: data.count,
-            latestBookingTime: data.latestBookingTime,
+            count: data.count ?? 0,
+            latestBookingTime: data.latestBookingTime ?? 0,
+            totalConfirmedFares: data.totalConfirmedFares ?? 0,
+            latestRouteTime: data.latestRouteTime ?? 0,
+            passengerHash: data.passengerHash ?? "",
           };
         }
       } catch {
@@ -42,8 +60,8 @@ export default function DriverRequestSync() {
     // Initial check
     checkNewRequests();
 
-    // Poll every 4 seconds for new incoming ride requests
-    const intervalId = setInterval(checkNewRequests, 4000);
+    // Poll every 3.5 seconds for live ride and fare updates
+    const intervalId = setInterval(checkNewRequests, 3500);
 
     return () => {
       isMounted = false;

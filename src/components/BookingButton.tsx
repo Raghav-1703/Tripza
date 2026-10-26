@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import PaymentCheckout from "@/components/PaymentCheckout";
+import { CheckCircle2 } from "lucide-react";
 
 interface BookingButtonProps {
   rideId: string;
@@ -28,6 +30,8 @@ export default function BookingButton({
   const [preferredPassengerGender, setPreferredPassengerGender] = useState<"ANY" | "FEMALE">("ANY");
   const [phoneInput, setPhoneInput] = useState("");
   const [error, setError] = useState("");
+  const [createdBookingId, setCreatedBookingId] = useState<string | null>(null);
+  const [showEarlyPay, setShowEarlyPay] = useState(false);
 
   const isFemalePassenger = userGender === "FEMALE";
 
@@ -54,8 +58,8 @@ export default function BookingButton({
         throw new Error(data.message || "Booking failed");
       }
 
-      router.push("/dashboard");
-      router.refresh();
+      const booking = await res.json();
+      setCreatedBookingId(booking.id);
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);
@@ -65,6 +69,60 @@ export default function BookingButton({
       setIsLoading(false);
     }
   };
+
+  if (createdBookingId) {
+    if (showEarlyPay) {
+      return (
+        <div className="space-y-3">
+          <PaymentCheckout
+            bookingId={createdBookingId}
+            amount={fare || 0}
+            prePaymentNotice="Payment is normally due when you reach your destination. Paying early locks in your current fare (fare may adjust if route or stops change)."
+            customButtonLabel={`Pay Early: ₹${(fare || 0).toFixed(2)}`}
+            onPaymentSuccess={() => {
+              router.push("/dashboard");
+              router.refresh();
+            }}
+            onClose={() => setShowEarlyPay(false)}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <div className="border rounded-xl p-4 bg-card text-card-foreground shadow-sm space-y-3">
+        <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
+          <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+          <div>
+            <p className="font-semibold text-sm">Ride Reserved Successfully!</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              Your booking is confirmed. Payment of ₹{(fare || 0).toFixed(2)} is normally due upon reaching your destination.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row items-center gap-2 pt-2 border-t">
+          <Button
+            size="sm"
+            className="w-full sm:w-auto text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white"
+            onClick={() => setShowEarlyPay(true)}
+          >
+            Pay Now (Optional Early Settlement)
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full sm:w-auto text-xs"
+            onClick={() => {
+              router.push("/dashboard");
+              router.refresh();
+            }}
+          >
+            View on Dashboard →
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

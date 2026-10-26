@@ -37,8 +37,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = await req.json();
-    const { rideId, latitude, longitude } = body;
+    const body = await req.json().catch(() => ({}));
+    const { rideId, latitude, longitude, accuracy } = body;
 
     if (!rideId) {
       return NextResponse.json({ message: "Ride ID is required" }, { status: 400 });
@@ -79,16 +79,19 @@ export async function POST(req: Request) {
 
     const booking = ride.bookings[0];
 
-    let parsedLat = typeof latitude === "number" && !isNaN(latitude) && latitude >= -90 && latitude <= 90 ? latitude : null;
-    let parsedLon = typeof longitude === "number" && !isNaN(longitude) && longitude >= -180 && longitude <= 180 ? longitude : null;
+    // Strictly validate passenger's live GPS coordinates from request
+    // Never fall back to fake, hardcoded, or vehicle telemetry coordinates!
+    const parsedLat = typeof latitude === "number" && !isNaN(latitude) && latitude >= -90 && latitude <= 90
+      ? latitude
+      : null;
+    const parsedLon = typeof longitude === "number" && !isNaN(longitude) && longitude >= -180 && longitude <= 180
+      ? longitude
+      : null;
+    const parsedAccuracy = typeof accuracy === "number" && !isNaN(accuracy) && accuracy >= 0
+      ? accuracy
+      : null;
 
-    // Fall back to active watchPosition() coordinates stored on active ride if payload coordinates are null
-    if ((parsedLat === null || parsedLon === null) && ride.isLiveSharing && ride.currentLat !== null && ride.currentLon !== null) {
-      parsedLat = ride.currentLat;
-      parsedLon = ride.currentLon;
-    }
-
-    console.log(`[BACKEND RECEIVED GPS] latitude = ${parsedLat}, longitude = ${parsedLon}`);
+    console.log(`[SOS TRIGGERED] User: ${dbUser.name} (${dbUser.id}), Ride: ${ride.id}, GPS: ${parsedLat != null ? `${parsedLat.toFixed(6)}, ${parsedLon!.toFixed(6)} (±${parsedAccuracy ? Math.round(parsedAccuracy) : "?"}m)` : "UNAVAILABLE"}`);
 
     // Create EmergencyAlert record
     const emergencyAlert = await prisma.emergencyAlert.create({
@@ -117,6 +120,7 @@ export async function POST(req: Request) {
       alertCreatedAt: emergencyAlert.createdAt,
       latitude: emergencyAlert.latitude,
       longitude: emergencyAlert.longitude,
+      accuracy: parsedAccuracy,
     });
 
     // Attempt emergency SMS notification structure
@@ -134,6 +138,7 @@ export async function POST(req: Request) {
       alertCreatedAt: emergencyAlert.createdAt,
       latitude: emergencyAlert.latitude,
       longitude: emergencyAlert.longitude,
+      accuracy: parsedAccuracy,
     });
 
     const contactNotified = emailResult.success;
@@ -148,6 +153,11 @@ export async function POST(req: Request) {
         notificationError,
         locationUnavailable,
         alertId: emergencyAlert.id,
+        coordinates: parsedLat != null && parsedLon != null ? {
+          latitude: parsedLat,
+          longitude: parsedLon,
+          accuracy: parsedAccuracy,
+        } : null,
       },
       { status: 201 }
     );

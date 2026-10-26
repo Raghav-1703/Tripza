@@ -92,18 +92,18 @@ async function runTests() {
   assert(personalCabFare.platformFee === 6, "Personal Cab 3% platform fee on ₹200 = ₹6");
   assert(personalCabFare.passengerTotal === 206, "Personal Cab total = ₹206");
 
-  // Test Private Car Pool: ₹10/km, detour ₹20/km, platform 3%
+  // Test Private Car Pool: ₹10/km, detour ₹10/km, platform 3%
   const carPoolFare = calculateFare({
     rideType: "Private Car Pool",
     routeDistanceMeters: 10000, // 10 km
-    pickupDetourMeters: 500, // 0.5 km = ₹10
-    dropDetourMeters: 300, // 0.3 km = ₹6
+    pickupDetourMeters: 500, // 0.5 km = ₹5
+    dropDetourMeters: 300, // 0.3 km = ₹3
   });
-  // Subtotal = 100 + 10 + 6 = 116. Platform fee = 116 * 0.03 = 3.48 -> total = 119.48
+  // Subtotal = 100 + 5 + 3 = 108. Platform fee = 108 * 0.03 = 3.24 -> total = 111.24
   assert(carPoolFare.mainRouteFare === 100, "Private Car Pool 10km main fare = ₹100 (₹10/km)");
-  assert(carPoolFare.pickupDetourFare === 10, "Private Car Pool 500m pickup detour = ₹10 (₹20/km)");
-  assert(carPoolFare.dropDetourFare === 6, "Private Car Pool 300m drop detour = ₹6 (₹20/km)");
-  assert(Math.abs(carPoolFare.passengerTotal - 119.48) < 0.01, `Private Car Pool total = ₹119.48 (got ₹${carPoolFare.passengerTotal})`);
+  assert(carPoolFare.pickupDetourFare === 5, "Private Car Pool 500m pickup detour = ₹5 (₹10/km)");
+  assert(carPoolFare.dropDetourFare === 3, "Private Car Pool 300m drop detour = ₹3 (₹10/km)");
+  assert(Math.abs(carPoolFare.passengerTotal - 111.24) < 0.01, `Private Car Pool total = ₹111.24 (got ₹${carPoolFare.passengerTotal})`);
 
   // Test Cab Pool: ₹20/km, detour ₹20/km, pooling incentive ₹3 flat, platform 3%
   const cabPoolFare = calculateFare({

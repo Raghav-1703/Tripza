@@ -76,6 +76,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "You cannot book your own ride" }, { status: 400 });
     }
 
+    if (ride.status === "COMPLETED" || ride.status === "CANCELLED") {
+      return NextResponse.json({ message: `Cannot book a ${ride.status.toLowerCase()} ride` }, { status: 400 });
+    }
+
     if (ride.seats < 1) {
       return NextResponse.json({ message: "No seats available" }, { status: 400 });
     }
@@ -144,11 +148,14 @@ export async function POST(req: Request) {
 
     let eligibility: Awaited<ReturnType<typeof checkPassengerEligibility>> | null = null;
 
-    if (passengerOrigin && passengerDestination && (passengerOrigin !== ride.origin || passengerDestination !== ride.destination)) {
+    const hasCustomPoints = passengerOrigin && passengerDestination && (passengerOrigin !== ride.origin || passengerDestination !== ride.destination);
+    const isRideActive = ride.status === "ACTIVE";
+
+    if (hasCustomPoints || isRideActive) {
       eligibility = await checkPassengerEligibility({
         rideId,
-        passengerOrigin,
-        passengerDestination,
+        passengerOrigin: passengerOrigin || ride.origin,
+        passengerDestination: passengerDestination || ride.destination,
       });
 
       if (!eligibility.eligible) {
@@ -158,12 +165,12 @@ export async function POST(req: Request) {
         );
       }
 
-      pickupLocation = passengerOrigin;
-      dropLocation = passengerDestination;
-      pickupLat = eligibility.passStart?.lat ?? null;
-      pickupLon = eligibility.passStart?.lon ?? null;
-      dropLat = eligibility.passEnd?.lat ?? null;
-      dropLon = eligibility.passEnd?.lon ?? null;
+      pickupLocation = passengerOrigin || ride.origin;
+      dropLocation = passengerDestination || ride.destination;
+      pickupLat = eligibility.passStart?.lat ?? pickupLat;
+      pickupLon = eligibility.passStart?.lon ?? pickupLon;
+      dropLat = eligibility.passEnd?.lat ?? dropLat;
+      dropLon = eligibility.passEnd?.lon ?? dropLon;
       if (typeof eligibility.fare === "number" && eligibility.fare > 0) {
         finalFare = eligibility.fare;
       }
@@ -227,34 +234,77 @@ export async function GET() {
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
-    // Get count and latest booking timestamp for rides published by this driver
+    // 1. Get driver rides and bookings
     const driverRides = await prisma.ride.findMany({
       where: { driverId: userId, status: { in: ["SCHEDULED", "ACTIVE"] } },
       select: {
         id: true,
+        routeUpdatedAt: true,
         bookings: {
-          select: { id: true, status: true, createdAt: true }
+          select: { id: true, status: true, fare: true, updatedAt: true, createdAt: true }
         }
       }
     });
 
     let totalCount = 0;
     let latestTime = 0;
+    let totalConfirmedFares = 0;
+    let latestRouteTime = 0;
 
     for (const r of driverRides) {
       totalCount += r.bookings.length;
+      if (r.routeUpdatedAt) {
+        const rt = new Date(r.routeUpdatedAt).getTime();
+        if (rt > latestRouteTime) latestRouteTime = rt;
+      }
       for (const b of r.bookings) {
         const t = new Date(b.createdAt).getTime();
         if (t > latestTime) {
           latestTime = t;
         }
+        if (b.updatedAt) {
+          const ut = new Date(b.updatedAt).getTime();
+          if (ut > latestTime) latestTime = ut;
+        }
+        if (b.status === "CONFIRMED") {
+          totalConfirmedFares += b.fare;
+        }
       }
+    }
+
+    // 2. Get passenger active bookings for this user
+    const passengerBookings = await prisma.booking.findMany({
+      where: { userId: userId, status: { in: ["PENDING", "CONFIRMED"] } },
+      select: {
+        id: true,
+        fare: true,
+        fareVersion: true,
+        updatedAt: true,
+        fareUpdatedAt: true,
+        payment: {
+          select: {
+            id: true,
+            status: true,
+            outstandingBalance: true,
+            amountPaid: true,
+          }
+        }
+      }
+    });
+
+    let passengerHash = "";
+    for (const pb of passengerBookings) {
+      passengerHash += `${pb.id}:${pb.fare}:${pb.fareVersion}:${pb.payment?.status}:${pb.payment?.outstandingBalance};`;
     }
 
     return NextResponse.json({
       count: totalCount,
       latestBookingTime: latestTime,
-      ridesCount: driverRides.length
+      totalConfirmedFares: Math.round(totalConfirmedFares * 100) / 100,
+      latestRouteTime,
+      ridesCount: driverRides.length,
+      passengerBookingsCount: passengerBookings.length,
+      passengerHash,
     }, { status: 200 });
   } catch (error) {
     console.error("Failed to fetch driver bookings count:", error);
