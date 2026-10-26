@@ -1,0 +1,12 @@
+{
+  "/profile/verification/page": "app/profile/verification/page.js",
+  "/rides/create/page": "app/rides/create/page.js",
+  "/dashboard/page": "app/dashboard/page.js",
+  "/rides/[id]/page": "app/rides/[id]/page.js",
+  "/api/rides/[id]/location/route": "app/api/rides/[id]/location/route.js",
+  "/api/auth/[...nextauth]/route": "app/api/auth/[...nextauth]/route.js",
+  "/api/bookings/route": "app/api/bookings/route.js",
+  "/api/bookings/[id]/route": "app/api/bookings/[id]/route.js",
+  "/search/page": "app/search/page.js",
+  "/api/rides/[id]/status/route": "app/api/rides/[id]/status/route.js"
+}
