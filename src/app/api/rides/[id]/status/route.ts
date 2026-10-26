@@ -150,12 +150,15 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         })
       : null;
 
+    const totalConfirmedFares = ride.bookings.reduce((sum, b) => sum + (b.fare || 0), 0);
+
     return NextResponse.json(
       {
         status: ride.status,
         routeVersion: ride.routeUpdatedAt ? new Date(ride.routeUpdatedAt).getTime() : 0,
         distance: ride.distance,
-        price: ride.price,
+        price: totalConfirmedFares > 0 ? totalConfirmedFares : ride.price,
+        totalConfirmedFares,
         userFare: userBooking?.fare ?? null,
         userPreviousFare: userBooking?.previousFare ?? null,
         userFareVersion: userBooking?.fareVersion ?? 1,

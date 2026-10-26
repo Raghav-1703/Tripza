@@ -141,3 +141,48 @@ export function getRouteSegmentDistance(
   
   return dist; // in km
 }
+
+export const TALEGAON_STATION_COORDS = {
+  name: "Talegaon Railway Station",
+  lat: 18.7367,
+  lon: 73.6705,
+};
+
+export function shouldRouteViaTalegaonStation(
+  start: { lat: number; lon: number; name?: string },
+  end: { lat: number; lon: number; name?: string },
+  startName?: string,
+  endName?: string
+): boolean {
+  const sName = (startName || start.name || "").toLowerCase();
+  const eName = (endName || end.name || "").toLowerCase();
+
+  const isZudioStart = sName.includes("zudio") || haversineDistance(start.lat, start.lon, 18.7213, 73.6685) <= 1.0;
+  const isIiitEnd = eName.includes("iiit") || haversineDistance(end.lat, end.lon, 18.7659, 73.6848) <= 1.0;
+
+  const isIiitStart = sName.includes("iiit") || haversineDistance(start.lat, start.lon, 18.7659, 73.6848) <= 1.0;
+  const isZudioEnd = eName.includes("zudio") || haversineDistance(end.lat, end.lon, 18.7213, 73.6685) <= 1.0;
+
+  if ((isZudioStart && isIiitEnd) || (isIiitStart && isZudioEnd)) {
+    const sDistStn = haversineDistance(start.lat, start.lon, TALEGAON_STATION_COORDS.lat, TALEGAON_STATION_COORDS.lon);
+    const eDistStn = haversineDistance(end.lat, end.lon, TALEGAON_STATION_COORDS.lat, TALEGAON_STATION_COORDS.lon);
+    if (sDistStn < 0.4 || eDistStn < 0.4) return false;
+    return true;
+  }
+
+  // General Talegaon South-to-North corridor through Station Road
+  const inTalegaonLat = (lat: number) => lat >= 18.70 && lat <= 18.78;
+  const inTalegaonLon = (lon: number) => lon >= 73.64 && lon <= 73.71;
+
+  if (inTalegaonLat(start.lat) && inTalegaonLon(start.lon) && inTalegaonLat(end.lat) && inTalegaonLon(end.lon)) {
+    const sDistStn = haversineDistance(start.lat, start.lon, TALEGAON_STATION_COORDS.lat, TALEGAON_STATION_COORDS.lon);
+    const eDistStn = haversineDistance(end.lat, end.lon, TALEGAON_STATION_COORDS.lat, TALEGAON_STATION_COORDS.lon);
+    if (sDistStn < 0.4 || eDistStn < 0.4) return false;
+
+    if ((start.lat < 18.732 && end.lat > 18.745) || (start.lat > 18.745 && end.lat < 18.732)) {
+      return true;
+    }
+  }
+
+  return false;
+}

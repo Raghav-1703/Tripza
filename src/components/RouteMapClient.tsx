@@ -7,6 +7,7 @@ import { LeafletProvider, createLeafletContext } from "@react-leaflet/core";
 import L, { Map as LeafletMap, MapOptions } from "leaflet";
 import type { LiveLocationData } from "./RouteMap";
 import { resolveLocationText } from "@/lib/locationSearch";
+import { TALEGAON_STATION_COORDS, shouldRouteViaTalegaonStation } from "@/lib/geo";
 
 // Fix Leaflet marker icons in Next.js
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -521,13 +522,21 @@ export default function RouteMapClient({
 
     const fetchRoute = async (s: Location, e: Location) => {
       try {
+        const routeLocations = shouldRouteViaTalegaonStation(s, e, s.name, e.name)
+          ? [
+              { lat: s.lat, lon: s.lon },
+              { lat: TALEGAON_STATION_COORDS.lat, lon: TALEGAON_STATION_COORDS.lon },
+              { lat: e.lat, lon: e.lon },
+            ]
+          : [{ lat: s.lat, lon: s.lon }, { lat: e.lat, lon: e.lon }];
+
         const payloadFastest = {
-          locations: [{ lat: s.lat, lon: s.lon }, { lat: e.lat, lon: e.lon }],
+          locations: routeLocations,
           costing: "auto",
           costing_options: { auto: { shortest: false } }
         };
         const payloadShortest = {
-          locations: [{ lat: s.lat, lon: s.lon }, { lat: e.lat, lon: e.lon }],
+          locations: routeLocations,
           costing: "auto",
           costing_options: { auto: { shortest: true } }
         };
@@ -540,19 +549,39 @@ export default function RouteMapClient({
         const dataFastest = await resFastest.json();
         const dataShortest = await resShortest.json();
 
+        // Helper to concatenate all leg shapes into a continuous polyline
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const decodeLegs = (trip: any): [number, number][] => {
+          if (!trip || !trip.legs || trip.legs.length === 0) return [];
+          const combined: [number, number][] = [];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          trip.legs.forEach((leg: any, idx: number) => {
+            const pts = decodePolyline6(leg.shape);
+            if (idx === 0) {
+              combined.push(...pts);
+            } else {
+              combined.push(...pts.slice(1));
+            }
+          });
+          return combined;
+        };
+
         if (dataFastest.trip && dataShortest.trip) {
+          const positionsFastest = decodeLegs(dataFastest.trip);
+          const positionsShortest = decodeLegs(dataShortest.trip);
+
           const routeFastest = {
             name: "Route 0 (Fastest Profile)",
             distance: dataFastest.trip.summary.length * 1000, 
             duration: dataFastest.trip.summary.time,
-            shape: dataFastest.trip.legs[0].shape
+            positions: positionsFastest
           };
           
           const routeShortest = {
             name: "Route 1 (Shortest Profile)",
             distance: dataShortest.trip.summary.length * 1000,
             duration: dataShortest.trip.summary.time,
-            shape: dataShortest.trip.legs[0].shape
+            positions: positionsShortest
           };
 
           const validRoutes = [routeFastest, routeShortest];
@@ -580,10 +609,8 @@ export default function RouteMapClient({
           console.log(`${(selectedRoute.duration / 60).toFixed(1)} min`);
           console.log("==================================================\n");
 
-          const positions = decodePolyline6(selectedRoute.shape);
-
           if (isMounted) {
-            setRoutePositions(positions);
+            setRoutePositions(selectedRoute.positions);
             if (onRouteCalculated) {
               onRouteCalculated({ 
                 distance: selectedRoute.distance, 

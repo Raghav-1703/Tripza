@@ -74,12 +74,18 @@ export default async function SearchResults({
 
   for (const ride of allRides) {
     const hasFemaleCoPassengerPref = ride.bookings.some(b => b.preferredPassengerGender === "FEMALE");
+    const totalCapacity = ride.seats + (ride.bookings?.length || 0);
 
     if (!passStart && !passEnd) {
       // Default fallback if no search params are provided
       const fallbackFare = ride.price > 0 
         ? ride.price 
-        : (ride.distance ? calculateFare({ rideType: ride.rideType || "Personal Cab", routeDistanceMeters: ride.distance }).passengerTotal : 0);
+        : (ride.distance ? calculateFare({
+            rideType: ride.rideType || "Private Pool",
+            seats: totalCapacity,
+            vehicleName: ride.vehicleName,
+            routeDistanceMeters: ride.distance,
+          }).passengerTotal : 0);
       matchedRides.push({ ...ride, dynamicPrice: fallbackFare, hasFemaleCoPassengerPref });
       continue;
     }
@@ -87,6 +93,8 @@ export default async function SearchResults({
     // Evaluate passenger journey against route using authoritative eligibility engine
     const eligibility = await checkPassengerEligibility({
       rideId: ride.id,
+      seats: totalCapacity,
+      vehicleName: ride.vehicleName,
       passengerOrigin: origin || ride.origin,
       passengerDestination: destination || ride.destination,
       passengerOriginCoords: passStart,

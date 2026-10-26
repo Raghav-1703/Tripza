@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { calculateFare } from "@/lib/fareCalculator";
 import { checkPassengerEligibility } from "@/lib/dynamicRouting";
 import { getBidirectionalBlockedUserIds } from "@/lib/block";
 import { validateAndNormalizePhone } from "@/lib/phoneValidation";
@@ -145,6 +146,15 @@ export async function POST(req: Request) {
     let dropLat = ride.destLat;
     let dropLon = ride.destLon;
     let finalFare = fare ? parseFloat(fare) : (ride.price || 0);
+    const totalCapacity = ride.seats + (ride.bookings?.length || 0);
+    if (finalFare <= 0 && ride.distance) {
+      finalFare = calculateFare({
+        rideType: ride.rideType,
+        seats: totalCapacity,
+        vehicleName: ride.vehicleName,
+        routeDistanceMeters: ride.distance,
+      }).passengerTotal;
+    }
 
     let eligibility: Awaited<ReturnType<typeof checkPassengerEligibility>> | null = null;
 
@@ -154,6 +164,8 @@ export async function POST(req: Request) {
     if (hasCustomPoints || isRideActive) {
       eligibility = await checkPassengerEligibility({
         rideId,
+        seats: totalCapacity,
+        vehicleName: ride.vehicleName,
         passengerOrigin: passengerOrigin || ride.origin,
         passengerDestination: passengerDestination || ride.destination,
       });

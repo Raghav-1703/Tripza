@@ -97,9 +97,14 @@ export default function CreateRide() {
     setIsLoading(true);
 
     try {
-      // Calculate total ride fare based on route distance
+      // Calculate total ride fare based on route distance and vehicle type (bike vs car)
       const calculatedPrice = routeInfo?.distance
-        ? calculateFare({ rideType: "Personal Cab", routeDistanceMeters: routeInfo.distance }).passengerTotal
+        ? calculateFare({
+            rideType: "Private Pool",
+            seats: formData.seats,
+            vehicleName: formData.vehicleName,
+            routeDistanceMeters: routeInfo.distance,
+          }).passengerTotal
         : 0;
 
       const res = await fetch("/api/rides", {
@@ -202,9 +207,17 @@ export default function CreateRide() {
               <div className="p-3 px-4 border-b bg-card flex justify-between items-center">
                 <h3 className="font-semibold text-sm">Route Preview</h3>
                 {routeInfo && (
-                  <div className="text-xs text-muted-foreground font-medium flex gap-4">
+                  <div className="text-xs text-muted-foreground font-medium flex gap-3 items-center">
                     <span>{(routeInfo.distance / 1000).toFixed(1)} km</span>
                     <span>{Math.round(routeInfo.duration / 60)} mins</span>
+                    <span className="font-semibold text-primary">
+                      Est. ₹{calculateFare({
+                        rideType: "Private Pool",
+                        seats: formData.seats,
+                        vehicleName: formData.vehicleName,
+                        routeDistanceMeters: routeInfo.distance,
+                      }).passengerTotal.toFixed(2)}
+                    </span>
                   </div>
                 )}
               </div>
@@ -236,10 +249,10 @@ export default function CreateRide() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label htmlFor="vehicleName">Car Name</Label>
+                <Label htmlFor="vehicleName">Vehicle Name</Label>
                 <Input
                   id="vehicleName"
-                  placeholder="e.g. Swift"
+                  placeholder="e.g. Activa / Swift"
                   required
                   value={formData.vehicleName}
                   onChange={handleChange}
@@ -260,7 +273,7 @@ export default function CreateRide() {
                           : "bg-background text-foreground border-input hover:bg-muted"
                       }`}
                     >
-                      {n} {n === 1 ? "seat" : "seats"}
+                      {n === 1 ? "1 seat (Bike)" : `${n} seats (Car)`}
                     </button>
                   ))}
                 </div>

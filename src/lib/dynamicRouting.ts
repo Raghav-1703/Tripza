@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { geocode, decodePolyline6, pointToRouteDistance, getRouteSegmentDistance, haversineDistance } from "@/lib/geo";
+import { geocode, decodePolyline6, pointToRouteDistance, getRouteSegmentDistance, haversineDistance, TALEGAON_STATION_COORDS, shouldRouteViaTalegaonStation } from "@/lib/geo";
 import { calculateFare } from "@/lib/fareCalculator";
 
 export interface RouteStop {
@@ -15,11 +15,21 @@ export interface RouteStop {
 // Helper to fetch base direct route between driver origin and destination
 export async function fetchDirectRoute(
   start: { lat: number; lon: number },
-  end: { lat: number; lon: number }
+  end: { lat: number; lon: number },
+  startName?: string,
+  endName?: string
 ): Promise<[number, number][]> {
   try {
+    const locations = shouldRouteViaTalegaonStation(start, end, startName, endName)
+      ? [
+          { lat: start.lat, lon: start.lon },
+          { lat: TALEGAON_STATION_COORDS.lat, lon: TALEGAON_STATION_COORDS.lon },
+          { lat: end.lat, lon: end.lon },
+        ]
+      : [{ lat: start.lat, lon: start.lon }, { lat: end.lat, lon: end.lon }];
+
     const payload = {
-      locations: [{ lat: start.lat, lon: start.lon }, { lat: end.lat, lon: end.lon }],
+      locations,
       costing: "auto",
       costing_options: { auto: { shortest: false } },
     };
@@ -30,8 +40,17 @@ export async function fetchDirectRoute(
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.trip?.legs?.[0]?.shape) {
-        return decodePolyline6(data.trip.legs[0].shape);
+      if (data.trip?.legs && data.trip.legs.length > 0) {
+        const fullRoute: [number, number][] = [];
+        data.trip.legs.forEach((leg: { shape: string }, idx: number) => {
+          const pts = decodePolyline6(leg.shape);
+          if (idx === 0) {
+            fullRoute.push(...pts);
+          } else {
+            fullRoute.push(...pts.slice(1));
+          }
+        });
+        return fullRoute;
       }
     }
   } catch (err) {
@@ -122,6 +141,8 @@ export async function calculateRoadDetourDistance(
 // Evaluates passenger eligibility against a ride's corridor using existing pickup-radius and direction rules
 export async function checkPassengerEligibility({
   rideId,
+  seats,
+  vehicleName,
   passengerOrigin,
   passengerDestination,
   passengerOriginCoords,
@@ -133,6 +154,8 @@ export async function checkPassengerEligibility({
   maxDetourKm,
 }: {
   rideId?: string;
+  seats?: number;
+  vehicleName?: string;
   passengerOrigin: string;
   passengerDestination: string;
   passengerOriginCoords?: { lat: number; lon: number } | null;
@@ -145,8 +168,10 @@ export async function checkPassengerEligibility({
 }) {
   let driverStart = driverOriginCoords || null;
   let driverEnd = driverDestCoords || null;
-  let effectiveRideType = rideType || "Personal Cab";
+  let effectiveRideType = rideType || "Private Pool";
   let storedRouteGeometry = existingRouteGeometry || null;
+  let effectiveSeats = seats;
+  let effectiveVehicleName = vehicleName;
   let fetchedRide: {
     status?: string;
     currentLat?: number | null;
@@ -165,6 +190,8 @@ export async function checkPassengerEligibility({
         destLat: true,
         destLon: true,
         rideType: true,
+        seats: true,
+        vehicleName: true,
         distance: true,
         baseDistance: true,
         baseRouteGeometry: true,
@@ -180,6 +207,12 @@ export async function checkPassengerEligibility({
     }
 
     fetchedRide = ride;
+    if (effectiveSeats === undefined) {
+      effectiveSeats = ride.seats;
+    }
+    if (!effectiveVehicleName) {
+      effectiveVehicleName = ride.vehicleName;
+    }
 
     if (!driverStart) {
       driverStart = (ride.originLat !== null && ride.originLon !== null)
@@ -222,17 +255,17 @@ export async function checkPassengerEligibility({
   if (storedRouteGeometry && storedRouteGeometry.length > 0) {
     routePoints = storedRouteGeometry;
   } else {
-    routePoints = await fetchDirectRoute(driverStart, driverEnd);
+    routePoints = await fetchDirectRoute(driverStart, driverEnd, passengerOrigin, passengerDestination);
   }
 
   // 4. Calculate proximity to baseline route
   const pickupInfo = pointToRouteDistance(passStart.lat, passStart.lon, routePoints);
   const dropInfo = pointToRouteDistance(passEnd.lat, passEnd.lon, routePoints);
 
-  // Configurable detour limit: argument > env MAX_DETOUR_KM > default 2.0 km
+  // Configurable detour limit: argument > env MAX_DETOUR_KM > default 1.0 km
   const effectiveMaxDist = typeof maxDetourKm === "number" && maxDetourKm > 0
     ? maxDetourKm
-    : (process.env.MAX_DETOUR_KM ? parseFloat(process.env.MAX_DETOUR_KM) : 2.0);
+    : (process.env.MAX_DETOUR_KM ? parseFloat(process.env.MAX_DETOUR_KM) : 1.0);
 
   if (pickupInfo.minDist > effectiveMaxDist) {
     return {
@@ -324,6 +357,8 @@ export async function checkPassengerEligibility({
 
   const fareResult = calculateFare({
     rideType: effectiveRideType,
+    seats: effectiveSeats,
+    vehicleName: effectiveVehicleName,
     routeDistanceMeters: segmentDistanceMeters,
     pickupDetourMeters,
     dropDetourMeters,
@@ -400,14 +435,37 @@ async function executeRecalculateRideRouteAndFares(rideId: string) {
   let basePolyline: [number, number][];
   let baseDistance = ride.baseDistance;
 
+  const requiresStation = shouldRouteViaTalegaonStation(driverStart, driverEnd, ride.origin, ride.destination);
+
   if (ride.baseRouteGeometry) {
     try {
       basePolyline = JSON.parse(ride.baseRouteGeometry);
+      // If the corridor needs station but the saved baseline bypassed it, refresh baseline through station
+      if (requiresStation && pointToRouteDistance(TALEGAON_STATION_COORDS.lat, TALEGAON_STATION_COORDS.lon, basePolyline).minDist > 0.4) {
+        basePolyline = await fetchDirectRoute(driverStart, driverEnd, ride.origin, ride.destination);
+        let bDist = 0;
+        for (let i = 0; i < basePolyline.length - 1; i++) {
+          bDist += haversineDistance(
+            basePolyline[i][0],
+            basePolyline[i][1],
+            basePolyline[i + 1][0],
+            basePolyline[i + 1][1]
+          ) * 1000;
+        }
+        baseDistance = bDist;
+        await prisma.ride.update({
+          where: { id: rideId },
+          data: {
+            baseRouteGeometry: JSON.stringify(basePolyline),
+            baseDistance,
+          },
+        });
+      }
     } catch {
-      basePolyline = await fetchDirectRoute(driverStart, driverEnd);
+      basePolyline = await fetchDirectRoute(driverStart, driverEnd, ride.origin, ride.destination);
     }
   } else {
-    basePolyline = await fetchDirectRoute(driverStart, driverEnd);
+    basePolyline = await fetchDirectRoute(driverStart, driverEnd, ride.origin, ride.destination);
     if (!baseDistance) {
       let bDist = 0;
       for (let i = 0; i < basePolyline.length - 1; i++) {
@@ -593,8 +651,11 @@ async function executeRecalculateRideRouteAndFares(rideId: string) {
       ) * 1000;
     }
 
+    const totalCapacity = ride.seats + (ride.bookings?.length || 0);
     const fareBreakdown = calculateFare({
       rideType: ride.rideType,
+      seats: totalCapacity,
+      vehicleName: ride.vehicleName,
       routeDistanceMeters: segmentMeters,
       pickupDetourMeters: meta.allocatedPickupDetour,
       dropDetourMeters: meta.allocatedDropDetour,
@@ -788,6 +849,25 @@ async function executeRecalculateRideRouteAndFares(rideId: string) {
     });
   }
 
+  // Ensure Talegaon Station is present as a corridor waypoint when traveling between Zudio and IIIT Pune
+  const hasStationInStops = stops.some(
+    (s) => haversineDistance(s.lat, s.lon, TALEGAON_STATION_COORDS.lat, TALEGAON_STATION_COORDS.lon) < 0.4
+  );
+  if (!hasStationInStops && shouldRouteViaTalegaonStation(driverStart, driverEnd, ride.origin, ride.destination)) {
+    const stationProj = pointToRouteDistance(TALEGAON_STATION_COORDS.lat, TALEGAON_STATION_COORDS.lon, basePolyline);
+    const stationProgress = stationProj.minIndex + stationProj.minProj.t;
+    stops.push({
+      id: "corridor-talegaon-station",
+      bookingId: "corridor-waypoint",
+      type: "PICKUP",
+      lat: TALEGAON_STATION_COORDS.lat,
+      lon: TALEGAON_STATION_COORDS.lon,
+      name: "Talegaon Station Corridor",
+      locationName: "Talegaon Railway Station",
+      progress: stationProgress,
+    });
+  }
+
   // Sort stops by progress along baseline route
   stops.sort((a, b) => {
     if (a.progress !== b.progress) return a.progress - b.progress;
@@ -856,10 +936,20 @@ async function executeRecalculateRideRouteAndFares(rideId: string) {
       }
     });
 
-    // Persist updated route geometry and road distance on Ride
+    const baselineDistance = (ride.baseDistance && ride.baseDistance > 0) ? ride.baseDistance : totalDistanceMeters;
+    const rideTotalCapacity = ride.seats + (ride.bookings?.length || 0);
+    const recalculatedRidePrice = calculateFare({
+      rideType: ride.rideType,
+      seats: rideTotalCapacity,
+      vehicleName: ride.vehicleName,
+      routeDistanceMeters: baselineDistance,
+    }).passengerTotal;
+
+    // Persist updated route geometry, road distance, and ride price on Ride
     await prisma.ride.update({
       where: { id: rideId },
       data: {
+        price: recalculatedRidePrice,
         distance: totalDistanceMeters,
         duration: totalDurationSeconds,
         routeGeometry: JSON.stringify(combinedPolyline),

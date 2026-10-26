@@ -60,7 +60,9 @@ export async function POST(req: Request) {
     // If price is 0 but route distance is available, calculate total fare using standard fare calculator
     if (parsedPrice <= 0 && parsedDistance && parsedDistance > 0) {
       const computed = calculateFare({
-        rideType: "Personal Cab",
+        rideType: "Private Pool",
+        seats: parsedSeats,
+        vehicleName,
         routeDistanceMeters: parsedDistance,
       });
       parsedPrice = computed.passengerTotal;
@@ -99,7 +101,9 @@ export async function POST(req: Request) {
       try {
         const directPolyline = await fetchDirectRoute(
           { lat: finalOriginLat, lon: finalOriginLon },
-          { lat: finalDestLat, lon: finalDestLon }
+          { lat: finalDestLat, lon: finalDestLon },
+          origin,
+          destination
         );
         if (directPolyline && directPolyline.length > 0) {
           baseRouteGeometry = JSON.stringify(directPolyline);
@@ -211,11 +215,18 @@ export async function GET(req: Request) {
     for (const ride of rides) {
       const hasFemaleCoPassengerPref = ride.bookings.some((b) => b.preferredPassengerGender === "FEMALE");
 
+      const totalCapacity = ride.seats + (ride.bookings?.length || 0);
+
       if (!passStart && !passEnd) {
         // Browse mode: return ride with default price
         const fallbackFare = ride.price > 0
           ? ride.price
-          : (ride.distance ? calculateFare({ rideType: ride.rideType, routeDistanceMeters: ride.distance }).passengerTotal : 0);
+          : (ride.distance ? calculateFare({
+              rideType: ride.rideType,
+              seats: totalCapacity,
+              vehicleName: ride.vehicleName,
+              routeDistanceMeters: ride.distance,
+            }).passengerTotal : 0);
 
         results.push({
           ...ride,
@@ -229,6 +240,8 @@ export async function GET(req: Request) {
       // Check eligibility for partial, intermediate, or full journey
       const eligibility = await checkPassengerEligibility({
         rideId: ride.id,
+        seats: totalCapacity,
+        vehicleName: ride.vehicleName,
         passengerOrigin: origin || ride.origin,
         passengerDestination: destination || ride.destination,
         passengerOriginCoords: passStart,

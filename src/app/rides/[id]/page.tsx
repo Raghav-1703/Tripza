@@ -100,15 +100,27 @@ export default async function RideDetails({
       )
     : null;
 
-  const computedFareFallback = ride.distance 
-    ? calculateFare({ rideType: ride.rideType || "Personal Cab", routeDistanceMeters: ride.distance }).passengerTotal 
+  const totalCapacity = ride.seats + (ride.bookings?.length || 0);
+  const baselineDistance = (ride.baseDistance && ride.baseDistance > 0) ? ride.baseDistance : ride.distance;
+  const computedFareFallback = baselineDistance 
+    ? calculateFare({
+        rideType: ride.rideType || "Private Pool",
+        seats: totalCapacity,
+        vehicleName: ride.vehicleName,
+        routeDistanceMeters: baselineDistance,
+      }).passengerTotal 
     : 0;
+
+  const confirmedBookings = ride.bookings.filter((b) => b.status === "CONFIRMED");
+  const totalConfirmedFares = confirmedBookings.reduce((sum, b) => sum + (b.fare || 0), 0);
 
   const displayFare = myBooking?.fare && myBooking.fare > 0
     ? myBooking.fare
     : (searchParams?.fare && parseFloat(searchParams.fare) > 0
         ? parseFloat(searchParams.fare)
-        : (ride.price > 0 ? ride.price : computedFareFallback));
+        : (confirmedBookings.length > 0
+            ? totalConfirmedFares
+            : (computedFareFallback > 0 ? computedFareFallback : (ride.price > 0 ? ride.price : 0))));
 
   const displayOrigin = myBooking?.pickupLocation || searchParams?.origin || ride.origin;
   const displayDestination = myBooking?.dropLocation || searchParams?.destination || ride.destination;
@@ -206,7 +218,7 @@ export default async function RideDetails({
               <div>
                 <div>
                   <span className="text-3xl font-bold text-primary">₹{displayFare.toFixed(2)}</span>
-                  {myBooking && myBooking.previousFare && myBooking.previousFare > 0 && Math.abs(myBooking.fare - myBooking.previousFare) > 0.01 && (
+                  {typeof myBooking?.previousFare === "number" && myBooking.previousFare > 0 && Math.abs(myBooking.fare - myBooking.previousFare) > 0.01 && (
                     myBooking.fare < myBooking.previousFare ? (
                       <Badge className="ml-2 bg-emerald-600 hover:bg-emerald-600 text-white text-[11px] font-semibold">
                         Saved ₹{(myBooking.previousFare - myBooking.fare).toFixed(2)}
@@ -219,7 +231,11 @@ export default async function RideDetails({
                   )}
                 </div>
                 <p className="text-sm text-muted-foreground font-medium">
-                  {myBooking ? "Your Booking Fare" : "Total Ride Fare"}
+                  {myBooking
+                    ? "Your Booking Fare"
+                    : confirmedBookings.length > 0
+                    ? `Total Ride Fare (${confirmedBookings.length} ${confirmedBookings.length === 1 ? "passenger" : "passengers"})`
+                    : "Total Ride Fare"}
                 </p>
                 {myBooking && myBooking.detourFare && myBooking.detourFare > 0 ? (
                   <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mt-0.5">
@@ -376,9 +392,9 @@ export default async function RideDetails({
                               <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5">
                                 <div>
                                   <span>Fare: <strong className="text-foreground">₹{b.fare.toFixed(2)}</strong></span>
-                                  {b.previousFare && b.previousFare > 0 && Math.abs(b.fare - b.previousFare) > 0.01 && b.fare < b.previousFare && (
+                                  {Boolean(b.previousFare && b.previousFare > 0 && Math.abs(b.fare - b.previousFare) > 0.01 && b.fare < b.previousFare) && (
                                     <span className="ml-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-                                      (Saved ₹{(b.previousFare - b.fare).toFixed(2)})
+                                      (Saved ₹{((b.previousFare || 0) - b.fare).toFixed(2)})
                                     </span>
                                   )}
                                 </div>

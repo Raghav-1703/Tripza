@@ -19,6 +19,8 @@ export interface FareDetails {
 
 export interface FareCalculationInput {
   rideType?: string;
+  seats?: number;
+  vehicleName?: string;
   routeDistanceMeters: number;
   pickupDetourMeters?: number;
   dropDetourMeters?: number;
@@ -27,17 +29,46 @@ export interface FareCalculationInput {
   includePlatformFee?: boolean;
 }
 
+export function isBikeVehicle(seats?: number, vehicleName?: string): boolean {
+  if (seats === 1) return true;
+  if (vehicleName) {
+    const vn = vehicleName.trim().toLowerCase();
+    if (
+      vn.includes("bike") ||
+      vn.includes("splend") ||
+      vn.includes("activa") ||
+      vn.includes("scoot") ||
+      vn.includes("motorcycle") ||
+      vn.includes("pulsar")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function getVehicleRates(seats?: number, vehicleName?: string) {
+  const isBike = isBikeVehicle(seats, vehicleName);
+  return {
+    baseRatePerKm: isBike ? 5 : 8,
+    detourRatePerKm: isBike ? 8 : 10,
+    vehicleLabel: isBike ? "Bike" : "Car",
+  };
+}
+
 /**
  * Authoritative Server-Side Fare Calculation Engine
  * 
- * Rules for Private Pooling:
- * - Base travel fare: ₹10 per km
- * - Additional detour fare: ₹10 per detour km
- * - Normal travel distance and detour distance are calculated separately (never double-counted).
+ * Rates:
+ * - Bike (1 seat): ₹5/km base rate, ₹8/km detour rate
+ * - 4-Seater & 6-Seater Car: ₹8/km base rate, ₹10/km detour rate
+ * - Platform fee: 3%
  * - Monetary values stored and rounded in integer paise for precision.
  */
 export function calculateFare({
-  rideType = "Private Car Pool",
+  rideType = "Private Pool",
+  seats,
+  vehicleName,
   routeDistanceMeters,
   pickupDetourMeters = 0,
   dropDetourMeters = 0,
@@ -50,27 +81,11 @@ export function calculateFare({
   const dropDetourKm = dropDetourMeters / 1000;
   const totalDetourKm = pickupDetourKm + dropDetourKm;
 
-  let baseRate = baseRatePerKm ?? 10;
-  let detourRate = detourRatePerKm ?? 10;
-  let poolingIncentive = 0;
-  let feeRate = includePlatformFee === false ? 0 : 0.03;
-
-  if (rideType === "Personal Cab") {
-    baseRate = baseRatePerKm ?? 20;
-    detourRate = detourRatePerKm ?? 20;
-    poolingIncentive = 0;
-    feeRate = includePlatformFee === false ? 0 : 0.03;
-  } else if (rideType === "Private Car Pool" || rideType === "Private Pooling") {
-    baseRate = baseRatePerKm ?? 10;
-    detourRate = detourRatePerKm ?? 10;
-    poolingIncentive = 0;
-    feeRate = includePlatformFee === false ? 0 : 0.03;
-  } else if (rideType === "Cab Pool") {
-    baseRate = baseRatePerKm ?? 20;
-    detourRate = detourRatePerKm ?? 20;
-    poolingIncentive = 3;
-    feeRate = includePlatformFee === false ? 0 : 0.03;
-  }
+  const rates = getVehicleRates(seats, vehicleName);
+  const baseRate = baseRatePerKm ?? rates.baseRatePerKm;
+  const detourRate = detourRatePerKm ?? rates.detourRatePerKm;
+  const poolingIncentive = 0;
+  const feeRate = includePlatformFee === false ? 0 : 0.03;
 
   const mainRouteFare = Math.round(mainDistanceKm * baseRate * 100) / 100;
   const pickupDetourFare = Math.round(pickupDetourKm * detourRate * 100) / 100;

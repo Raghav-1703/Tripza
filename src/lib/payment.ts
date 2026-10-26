@@ -212,15 +212,20 @@ export function computeBookingPaymentSummary(booking: {
 export function computePayableAmount(booking: {
   fare: number;
   detourDistance: number | null;
-  ride: { distance: number | null; rideType: string };
+  ride: { distance: number | null; rideType: string; seats?: number; vehicleName?: string; bookings?: unknown[] };
 }): { amount: number; amountSubunits: number } {
   let serverAmount = booking.fare;
   const routeDistanceMeters = booking.ride.distance ? booking.ride.distance * 1000 : 0;
   const detourMeters = booking.detourDistance || 0;
 
   if (routeDistanceMeters > 0) {
+    const totalCapacity = booking.ride.seats !== undefined
+      ? booking.ride.seats + (booking.ride.bookings?.length || 0)
+      : undefined;
     const computed = calculateFare({
       rideType: booking.ride.rideType,
+      seats: totalCapacity,
+      vehicleName: booking.ride.vehicleName,
       routeDistanceMeters: routeDistanceMeters,
       pickupDetourMeters: detourMeters / 2,
       dropDetourMeters: detourMeters / 2,
@@ -980,6 +985,8 @@ export async function handleEarlyExitSettlement({
   const pickupDetour = booking.detourDistance ? booking.detourDistance / 2 : 0;
   const fareBreakdown = calculateFare({
     rideType: booking.ride.rideType,
+    seats: booking.ride.seats,
+    vehicleName: booking.ride.vehicleName,
     routeDistanceMeters: travelledMeters,
     pickupDetourMeters: pickupDetour,
     dropDetourMeters: 0, // No drop detour since passenger exits directly along vehicle's path

@@ -130,7 +130,7 @@ model Ride {
   departure       DateTime
   seats           Int
   price           Float            @default(0)
-  rideType        String           @default("Personal Cab")
+  rideType        String           @default("Private Pool")
   vehicleName     String           @default("")
   distance        Float?
   duration        Int?
